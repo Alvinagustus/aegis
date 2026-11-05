@@ -1,0 +1,19 @@
+# build artifacts
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+
+# secrets & env
+.env
+
+# misc
+*.log
+
+# local working docs (kept on VPS, not published)
+/docs/claude-demo-prompt.md
+/docs/demo-script.md
+
+# local-only demo assets (motion film + script)
+/demo.html

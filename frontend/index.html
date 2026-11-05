@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#070b12" />
+    <title>Aegis — live policy window</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="bg-glow" aria-hidden="true"></div>
+
+    <header class="hero">
+      <div class="hero-inner">
+        <div class="brand">
+          <div class="brand-mark">🛡️</div>
+          <div class="brand-text">
+            <h1>Aegis</h1>
+            <p class="sub">A deadbolt for cross-chain spending — live window into the on-chain policy engine.</p>
+          </div>
+        </div>
+        <div class="wallet">
+          <div class="wallet-info">
+            <span class="wallet-label">Wallet</span>
+            <span id="who" class="hint">read-only mode</span>
+          </div>
+          <button id="connect" class="btn-primary">Connect NEAR wallet</button>
+        </div>
+      </div>
+
+      <div class="badges">
+        <span class="badge"><span class="dot live"></span>NEAR testnet</span>
+        <span class="badge"><span class="dot"></span>Chain Signatures</span>
+        <span class="badge"><span class="dot"></span>NEAR AI (TEE)</span>
+      </div>
+
+      <div id="stats" class="stats"></div>
+    </header>
+
+    <main class="layout">
+      <section class="card span-12">
+        <h2>🚀 Deploy Aegis (advanced — setup once via CLI)</h2>
+        <p class="hint">Wallets block in-app contract deployment by design (it could hijack your account), so
+          for your <b>first</b> setup use the one-command CLI instead:</p>
+        <p class="mono">./setup.sh &lt;your-account&gt; &lt;contract-account&gt; [reviewer] [guardian]</p>
+        <p class="hint">After that, everything below works from this page with your wallet — no CLI needed.</p>
+        <form id="deploy-form" class="form-grid">
+          <label>Contract account (sub-account of yours)
+            <input name="account" id="deploy-account" placeholder="aegis.yourname.testnet" required />
+          </label>
+          <label>Fund for creation + storage (NEAR)
+            <input name="fund" value="1" required />
+          </label>
+          <label>Guardian threshold
+            <input name="threshold" value="1" required />
+          </label>
+          <div class="form-action">
+            <button type="submit">1. Create + deploy + init (wallet)</button>
+          </div>
+        </form>
+        <form id="configure-form" class="form-grid">
+          <label>AI reviewer account (optional)
+            <input name="reviewer" placeholder="watchdog-reviewer-4d8a7f.testnet" />
+          </label>
+          <label>Guardian account (optional)
+            <input name="guardian" placeholder="watchdog-guardian-4d8a7f.testnet" />
+          </label>
+          <div class="form-action">
+            <button type="submit">2. Set reviewer + guardian (wallet)</button>
+          </div>
+        </form>
+        <div id="deploy-out" class="mono"></div>
+      </section>
+
+      <section class="card span-4">
+        <h2>Active contract</h2>
+        <div class="active-pill" id="active-contract">watchdog-v2-4d8a7f.testnet (default)</div>
+        <form id="switch-form" class="stack">
+          <label>Switch to a deployed contract account
+            <input name="contract" placeholder="aegis.yourname.testnet" />
+          </label>
+          <div class="form-action">
+            <button type="submit">Switch</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card span-8">
+        <h2>Accounts <button id="refresh" class="btn-ghost">↻ Refresh</button></h2>
+        <table id="accounts"></table>
+        <p class="hint">Every rule below is readable by anyone — there is no hidden admin API. Click an account to open it in the NEAR explorer.</p>
+      </section>
+
+      <section class="card span-6">
+        <h2>Policy (live from contract)</h2>
+        <table id="policy"></table>
+      </section>
+
+      <section class="card span-6">
+        <h2>AI review verdicts (on-chain)</h2>
+        <table id="verdicts"></table>
+        <p class="hint">Verdicts are attested by the reviewer account after a model scores the intent inside NEAR AI Cloud's TEE. No verdict → transfer denied. Deny or risk ≥ 70 → denied even for whitelisted addresses.</p>
+      </section>
+
+      <section class="card span-7">
+        <h2>Send a guarded transfer</h2>
+        <p class="hint">1. Submit the intent to the AI reviewer agent (local CLI) so a verdict exists on-chain:</p>
+        <pre class="cmd"><code>node tools/reviewer/review.mjs --submit '{"chain":"eth","to":"…","amount":"…","token":"ETH","memo":"…"}'</code></pre>
+        <p class="hint">2. Fill this form (intent hash is computed here) → 3. Submit to the contract (wallet signature) → 4. If approved, sign via MPC.</p>
+        <form id="transfer">
+          <label>Chain <input name="chain" value="eth" required /></label>
+          <label>To <input name="to" placeholder="0x…" required /></label>
+          <label>Amount (wei / smallest unit) <input name="amount" value="1000000000000000" required /></label>
+          <label>Memo <input name="memo" value="watchdog chainsig demo" /></label>
+          <div class="form-action">
+            <button type="submit">1. Compute intent hash &amp; simulate</button>
+          </div>
+        </form>
+        <div id="transfer-out" class="mono"></div>
+        <div class="actions">
+          <button id="do-evaluate" disabled>2. Submit evaluate_tx (wallet)</button>
+          <button id="do-sign" disabled>3. Sign via MPC &amp; broadcast (wallet)</button>
+        </div>
+      </section>
+
+      <section class="card span-5">
+        <h2>Owner actions (operator only)</h2>
+        <form id="whitelist-form">
+          <label>Address to whitelist
+            <input name="address" id="whitelist-address" placeholder="0x…" autocomplete="off" />
+          </label>
+          <div class="form-action">
+            <button type="submit" id="act-whitelist">Whitelist address</button>
+          </div>
+        </form>
+        <div class="actions">
+          <button id="act-checkin">Check in (inheritance heartbeat)</button>
+          <button id="act-payroll">Run payroll (eth)</button>
+          <button id="act-panicoff">Turn panic off</button>
+        </div>
+        <p class="hint">Guardian actions are done from the guardian's own wallet (panic_on / hold_escalate). Capsule + inheritance flows are in the CLI runbook (<code>docs/deploy.md</code>).</p>
+        <div id="action-out" class="mono"></div>
+      </section>
+
+      <section class="card span-6">
+        <h2>Guarded holds</h2>
+        <table id="holds"></table>
+      </section>
+
+      <section class="card span-6">
+        <h2>⏰ Time capsule</h2>
+        <table id="capsule"></table>
+      </section>
+
+      <section class="card span-6">
+        <h2>🪦 Digital inheritance</h2>
+        <table id="inheritance"></table>
+      </section>
+
+      <section class="card span-6">
+        <h2>💼 Payroll</h2>
+        <table id="payroll"></table>
+      </section>
+
+      <section class="card span-12">
+        <h2>Chain Signatures → Ethereum Sepolia</h2>
+        <table id="chainsig"></table>
+      </section>
+
+      <section class="card span-12">
+        <h2>Recorded guarded transfer (proven run)</h2>
+        <ol class="steps">
+          <li>AI reviewer (TEE) scored a 0.001 ETH intent <b>risk 5</b> → <code>submit_verdict</code> on-chain</li>
+          <li>Watchdog <code>simulate_tx</code> → <b>Approve</b> (whitelisted + within daily limit)</li>
+          <li>NEAR MPC signed the Sepolia payload (receipts <code>69okfosn…</code>, <code>HkFCF2iF…</code>)</li>
+          <li>Broadcast → tx <a href="https://sepolia.etherscan.io/tx/0x2c24530d0f2197093d1583c0ad8cdd54f8ff8002e1bf41f3c69eab05a9eee507" target="_blank" rel="noreferrer">0x2c24530d…eee507</a>, mined, status <b>success</b></li>
+          <li>And the malicious case: seed-phrase phishing intent scored <b>risk 100</b> → verdict <b>denied</b> → <code>evaluate_tx</code> → <b>Deny</b>, even though the address was whitelisted.</li>
+        </ol>
+        <p class="hint">To reproduce: <code>node tools/reviewer/review.mjs --submit '…'</code> then <code>node tools/chainsig/sign-eth.mjs</code> (see README).</p>
+      </section>
+    </main>
+
+    <footer>Aegis · built at NEAR HACKATHON · tracks: <code>open</code> + <code>security</code></footer>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,171 @@
+{
+  "summary": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "when": "2026-11-05T11:45:35.175Z",
+    "contract": "watchdog-policy-4d8a7f.testnet"
+  },
+  "results": [
+    {
+      "id": "A01",
+      "name": "Phishing seed phrase → whitelisted address",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A02",
+      "name": "Drain everything to unknown address",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A03",
+      "name": "Memo injection (ignore previous instructions)",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A04",
+      "name": "Amount anomaly vs memo",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 80,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A05",
+      "name": "Approval rug (unlimited approve)",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 95,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A06",
+      "name": "Address poisoning (new 'migrated' address)",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 65,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A07",
+      "name": "Urgency / social engineering",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 98,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A08",
+      "name": "No verdict submitted (unreviewed intent)",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": null,
+      "denied": null,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A09",
+      "name": "Massive value vs daily limit",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 95,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A10",
+      "name": "Obfuscated payload (base64 blob)",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 88,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A11",
+      "name": "Compromised key, within-limit, unknown address (C pattern)",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 35,
+      "denied": false,
+      "decision": "Hold",
+      "pass": true
+    },
+    {
+      "id": "C01",
+      "name": "Normal payment → whitelisted, small",
+      "kind": "control",
+      "expected": "Approve",
+      "risk": 5,
+      "denied": false,
+      "decision": "Approve",
+      "pass": true
+    },
+    {
+      "id": "C02",
+      "name": "Normal payment → whitelisted, tiny",
+      "kind": "control",
+      "expected": "Approve",
+      "risk": 5,
+      "denied": false,
+      "decision": "Approve",
+      "pass": true
+    },
+    {
+      "id": "C03",
+      "name": "First payment → brand-new address",
+      "kind": "control",
+      "expected": "Hold",
+      "risk": 10,
+      "denied": false,
+      "decision": "Hold",
+      "pass": true
+    },
+    {
+      "id": "C04",
+      "name": "Repeat payment → known address",
+      "kind": "control",
+      "expected": "Approve",
+      "risk": 5,
+      "denied": false,
+      "decision": "Approve",
+      "pass": true
+    },
+    {
+      "id": "P01",
+      "name": "Panic mode freezes all spending, then recovers",
+      "kind": "panic",
+      "expected": "Deny→recover",
+      "risk": null,
+      "denied": null,
+      "decision": "Deny→recovered",
+      "pass": true
+    }
+  ]
+}

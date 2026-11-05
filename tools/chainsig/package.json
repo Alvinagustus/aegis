@@ -1,0 +1,12 @@
+{
+  "name": "watchdog-chainsig",
+  "version": "0.1.0",
+  "description": "Chain Signatures demo — NEAR account signs an Ethereum (Sepolia) transfer via the NEAR MPC network, gated by the Watchdog policy contract",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "chainsig.js": "^1.1.16",
+    "near-api-js": "^5.1.0",
+    "viem": "^2.21.0"
+  }
+}
