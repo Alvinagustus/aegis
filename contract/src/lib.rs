@@ -282,6 +282,7 @@ impl Watchdog {
         nonce: u64,
     ) -> Decision {
         require!(env::predecessor_account_id() == self.operator, "only operator");
+        require!(nonce == self.next_nonce, "stale nonce");
         let to_norm = to.to_lowercase();
 
         if self.panic {
@@ -323,6 +324,9 @@ impl Watchdog {
         // Vetted by guardians or by time; single use; still limit-checked.
         let pre_key = format!("{}|{}|{}", chain.to_lowercase(), to_norm, amount.0);
         if self.preapproved.remove(&pre_key).is_some() {
+            // consume any verdict bound to this transfer too (N6)
+            let vk = intent_hash_for(&chain, &to_norm, amount.0, &memo_hash, nonce);
+            self.verdicts.remove(&vk);
             self.seen.insert(address_key.clone(), now);
             self.record_spend(&day_key, amount.0);
             self.next_nonce += 1;
@@ -677,11 +681,13 @@ impl Watchdog {
     // ------------------------------------------------------------------
 
     /// Owner heartbeat. Resets the clock and closes an open inheritance.
-    /// It never touches the owner's own whitelist entries (F10).
+    /// It never touches the owner's own whitelist entries (F10), and it
+    /// clears stale guardian votes so a fresh emergency needs fresh votes.
     pub fn check_in(&mut self) {
         self.only_operator();
         self.last_checkin = env::block_timestamp();
         self.inheritance_open = false;
+        self.heir_votes.clear();
         Self::event("CHECK_IN", "", "", 0);
     }
 
@@ -756,6 +762,7 @@ impl Watchdog {
         for heir in self.heir_addresses.clone() {
             self.whitelisted.insert(format!("eth:{}", heir), now);
         }
+        self.heir_votes.clear();
         Self::event("INHERITANCE_OPEN", "", "", self.heir_addresses.len() as u128);
     }
 
@@ -790,20 +797,16 @@ impl Watchdog {
         Self::event("EMPLOYEE_ADDED", "", &addr, sal);
     }
 
-    pub fn remove_employee(&mut self, address: String) {
+    pub fn remove_employee(&mut self, chain: String, address: String) {
         self.only_operator();
         let addr = address.to_lowercase();
+        let chain = chain.to_lowercase();
         self.employees.remove(&addr);
-        // F9: a removed employee must not keep skipping the quiet period.
-        let wl: Vec<String> = self.whitelisted.keys().filter(|k| k.ends_with(&format!(":{}", addr))).map(|k| k.clone()).collect();
-        for key in wl {
-            self.whitelisted.remove(&key);
-        }
-        let sn: Vec<String> = self.seen.keys().filter(|k| k.ends_with(&format!(":{}", addr))).map(|k| k.clone()).collect();
-        for key in sn {
-            self.seen.remove(&key);
-        }
-        Self::event("EMPLOYEE_REMOVED", "", &addr, 0);
+        // N10: only this employee's (chain, addr) entries are removed —
+        // owner-whitelisted entries for other chains are untouched.
+        self.whitelisted.remove(&format!("{}:{}", chain, addr));
+        self.seen.remove(&format!("{}:{}", chain, addr));
+        Self::event("EMPLOYEE_REMOVED", &chain, &addr, 0);
     }
 
     /// Run one payroll batch. Employees are treated like whitelisted

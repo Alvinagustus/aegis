@@ -55,6 +55,17 @@ fn thresh(c: &mut Watchdog, n: u32) {
     c.apply_guard_threshold();
 }
 
+/// evaluate with the current nonce (for non-verdict-seeking tests)
+fn eval(c: &mut Watchdog, chain: &str, to: &str, amount: U128, memo_hash: &str) -> Decision {
+    let nonce = c.get_nonce();
+    c.evaluate_tx(chain.into(), to.into(), amount, memo_hash.into(), nonce)
+}
+
+fn eval_sim(c: &mut Watchdog, chain: &str, to: &str, amount: U128, memo_hash: &str) -> Decision {
+    let nonce = c.get_nonce();
+    c.simulate_tx(chain.into(), to.into(), amount, memo_hash.into(), nonce)
+}
+
 fn as_operator(ctx: &mut VMContextBuilder) {
     testing_env!(ctx
         .predecessor_account_id(oper())
@@ -72,7 +83,7 @@ fn first_seen_address_is_held() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.predecessor_account_id(oper()).build());
-    assert_eq!(c.evaluate_tx("eth".into(), "0xdeadbeef".into(), U128(100), "".into(), 0), Decision::Hold);
+    assert_eq!(eval(&mut c, "eth", "0xdeadbeef", U128(100), ""), Decision::Hold);
     let h = c.get_hold(1).unwrap();
     assert_eq!(h.status, HoldStatus::Pending);
     assert_eq!(h.to, "0xdeadbeef");
@@ -84,10 +95,10 @@ fn whitelist_is_approved_and_spends_limit() {
     let mut ctx = VMContextBuilder::new();
     as_operator(&mut ctx);
     wl(&mut c, "eth".into(), "0xcold".into());
-    assert_eq!(c.evaluate_tx("eth".into(), "0xCOLD".into(), U128(10), "memo".into(), 0), Decision::Approve);
-    assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(10), "memo".into(), 0), Decision::Approve);
+    assert_eq!(eval(&mut c, "eth", "0xCOLD", U128(10), "memo"), Decision::Approve);
+    assert_eq!(eval(&mut c, "eth", "0xcold", U128(10), "memo"), Decision::Approve);
     c.set_daily_limit("eth".into(), U128(20));
-    assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(10), "memo".into(), 0), Decision::Deny);
+    assert_eq!(eval(&mut c, "eth", "0xcold", U128(10), "memo"), Decision::Deny);
 }
 
 #[test]
@@ -96,7 +107,7 @@ fn non_operator_cannot_evaluate() {
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.predecessor_account_id(accounts(1)).build());
     expect_panic(|| {
-        c.evaluate_tx("eth".into(), "0xdeadbeef".into(), U128(100), "".into(), 0);
+        eval(&mut c, "eth", "0xdeadbeef", U128(100), "");
     });
 }
 
@@ -105,7 +116,7 @@ fn guardian_escalation_clears_hold() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "".into(), 0);
+    eval(&mut c, "eth", "0xunknown", U128(100), "");
     guardian(&mut c, GUARD1.parse().unwrap());
     guardian(&mut c, GUARD2.parse().unwrap());
 
@@ -129,7 +140,7 @@ fn owner_can_cancel_pending_and_cleared_hold() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "".into(), 0);
+    eval(&mut c, "eth", "0xunknown", U128(100), "");
     guardian(&mut c, GUARD1.parse().unwrap());
 
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
@@ -150,7 +161,7 @@ fn strays_cannot_cancel_hold() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "".into(), 0);
+    eval(&mut c, "eth", "0xunknown", U128(100), "");
     testing_env!(ctx.predecessor_account_id(accounts(3)).build());
     expect_panic(|| c.cancel_hold(1));
 }
@@ -165,7 +176,7 @@ fn guardian_panic_freezes_then_owner_unfreezes_after_cooldown() {
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.panic_on();
     assert!(c.is_panicked());
-    assert_eq!(c.simulate_tx("eth".into(), "0xcold".into(), U128(1), "".into(), 0), Decision::Deny);
+    assert_eq!(eval_sim(&mut c, "eth", "0xcold", U128(1), ""), Decision::Deny);
 
     // owner cannot unfreeze immediately
     as_operator(&mut ctx);
@@ -225,7 +236,7 @@ fn no_verdict_means_no_transfer() {
     wl(&mut c, "eth".into(), "0xcold".into());
     // even a whitelisted address is blocked until the reviewer signs off
     assert_eq!(
-        c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0),
+        eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
         Decision::Deny
     );
 }
@@ -240,12 +251,12 @@ fn ai_deny_overrides_whitelist() {
     wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
-    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0);
+    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
     c.submit_verdict(key, 99, true, "watchdog-risk-v1".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
-        c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0),
+        eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
         Decision::Deny
     );
 }
@@ -260,7 +271,7 @@ fn ai_clears_transfers() {
     wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
-    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0);
+    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
     c.submit_verdict(key.clone(), 5, false, "watchdog-risk-v1".into());
     let v = c.get_ai_verdict(key.clone()).unwrap();
     assert_eq!(v.risk, 5);
@@ -268,7 +279,7 @@ fn ai_clears_transfers() {
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
-        c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0),
+        eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
         Decision::Approve
     );
     // single-use: verdict consumed by the approve
@@ -286,21 +297,21 @@ fn high_risk_score_blocks_transfer() {
     c.propose_ai_deny_threshold(70); c.apply_ai_deny_threshold();
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
-    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0);
+    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
     c.submit_verdict(key, 70, false, "watchdog-risk-v1".into());
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
-        c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0),
+        eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
         Decision::Deny
     );
 
     // just below the threshold sails through
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
-    let key2 = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 1);
+    let key2 = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
     c.submit_verdict(key2, 69, false, "watchdog-risk-v1".into());
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
-        c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 1),
+        eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
         Decision::Approve
     );
 }
@@ -530,8 +541,8 @@ fn f1_double_evaluate_stays_held() {
     // without reviewer and whitelist "known" via grace after release only:
     // use an unknown address instead:
     c.whitelist_remove("eth".into(), "0xattacker".into());
-    let d1 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into(), 0);
-    let d2 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into(), 0);
+    let d1 = eval(&mut c, "eth", "0xattacker", U128(100), "h");
+    let d2 = eval(&mut c, "eth", "0xattacker", U128(100), "h");
     assert_eq!(d1, Decision::Hold);
     assert_eq!(d2, Decision::Hold); // was Approve before the F1 fix
 
@@ -540,7 +551,7 @@ fn f1_double_evaluate_stays_held() {
     testing_env!(ctx.block_timestamp(2 * DAY).build());
     c.release_hold(1);
     assert_eq!(c.get_hold(1).unwrap().status, HoldStatus::Released);
-    let d3 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into(), 0);
+    let d3 = eval(&mut c, "eth", "0xattacker", U128(100), "h");
     assert_eq!(d3, Decision::Approve);
 }
 
@@ -556,11 +567,11 @@ fn f6_released_capsule_enables_evaluate() {
     testing_env!(ctx.block_timestamp(2 * DAY).build());
     c.release_capsule(id);
     // exact (chain,to,amount) → Approve once (no reviewer set)
-    let d = c.evaluate_tx("eth".into(), "0xheir".into(), U128(100), "m".into(), 0);
+    let d = eval(&mut c, "eth", "0xheir", U128(100), "m");
     assert_eq!(d, Decision::Approve);
     // released = seen, so later calls keep approving (F1 semantics)
     testing_env!(ctx.block_timestamp(2 * DAY).build());
-    let d2 = c.evaluate_tx("eth".into(), "0xheir".into(), U128(100), "m".into(), 1);
+    let d2 = eval(&mut c, "eth", "0xheir", U128(100), "m");
     assert_eq!(d2, Decision::Approve);
 }
 
@@ -570,7 +581,7 @@ fn f6_cleared_hold_release_enables_evaluate() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "m".into(), 0);
+    eval(&mut c, "eth", "0xunknown", U128(100), "m");
     guardian(&mut c, GUARD1.parse().unwrap());
     guardian(&mut c, GUARD2.parse().unwrap());
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
@@ -581,7 +592,7 @@ fn f6_cleared_hold_release_enables_evaluate() {
     testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
     quiet(&mut c, DAY);
     c.release_hold(1);
-    let d = c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "m".into(), 0);
+    let d = eval(&mut c, "eth", "0xunknown", U128(100), "m");
     assert_eq!(d, Decision::Approve);
 }
 
@@ -598,13 +609,13 @@ fn f3_verdict_bound_to_transfer() {
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     // benign verdict for a tiny transfer
-    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(1_000_000), "m".into(), 0);
+    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(1_000_000), "m".into(), c.get_nonce());
     c.submit_verdict(key, 1, false, "m".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     // same memo/amount ok, but a 1000x amount with the same memo_hash+nonce
     // must not find that verdict
-    let d = c.evaluate_tx("eth".into(), "0xcold".into(), U128(1_000_000_000_000), "m".into(), 0);
+    let d = eval(&mut c, "eth", "0xcold", U128(1_000_000_000_000), "m");
     assert_eq!(d, Decision::Deny);
 }
 
@@ -618,11 +629,11 @@ fn f3_verdict_expires() {
     wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
-    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "m".into(), 0);
+    let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "m".into(), c.get_nonce());
     c.submit_verdict(key, 1, false, "m".into());
 
     testing_env!(ctx.block_timestamp(20 * 60_000_000_000).predecessor_account_id(oper()).build());
-    let d = c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "m".into(), 0);
+    let d = eval(&mut c, "eth", "0xcold", U128(5), "m");
     assert_eq!(d, Decision::Deny); // expired (TTL = 10 min)
 }
 
@@ -683,13 +694,13 @@ fn n2_evm_labels_share_one_counter() {
     c.set_daily_limit("eth".into(), U128(100));
     wl(&mut c, "eth".into(), "0xcold".into());
     // spend all 100 on "eth" (whitelisted, no reviewer → approve)
-    assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(100), "".into(), 0), Decision::Approve);
+    assert_eq!(eval(&mut c, "eth", "0xcold", U128(100), ""), Decision::Approve);
     // same day, different EVM label → shared counter exhausted → Deny
-    let d = c.evaluate_tx("base".into(), "0xcold".into(), U128(1), "".into(), 1);
+    let d = eval(&mut c, "base", "0xcold", U128(1), "");
     assert_eq!(d, Decision::Deny);
     // BTC has its own counter (1M sats default) → not denied
     wl(&mut c, "btc".into(), "btcaddr".into());
-    let d2 = c.evaluate_tx("btc".into(), "btcaddr".into(), U128(1), "".into(), 1);
+    let d2 = eval(&mut c, "btc", "btcaddr", U128(1), "");
     assert_eq!(d2, Decision::Approve);
 }
 #[test]
