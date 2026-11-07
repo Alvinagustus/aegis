@@ -189,8 +189,9 @@ pub struct Watchdog {
     heir_addresses: Vec<String>,
     /// Guardian votes to open the inheritance (M-of-N, like holds).
     heir_votes: IterableMap<AccountId, bool>,
-    /// Guardian votes to veto pending admin actions (N3: threshold needed).
-    veto_votes: LookupMap<String, u32>,
+    /// Guardian votes to veto pending admin actions (N3: counted per
+    /// guardian — "action:account" — never twice by the same guardian).
+    veto_votes: IterableMap<String, bool>,
     /// After panic_off, panic_on re-arms only after this (default 1 hour).
     last_panic_off: u64,
     // --- inheritance --------------------------------------------------
@@ -249,7 +250,7 @@ impl Watchdog {
             heir_accounts: Vec::new(),
             heir_addresses: Vec::new(),
             heir_votes: IterableMap::new(b"hv".as_slice()),
-            veto_votes: LookupMap::new(b"vv".as_slice()),
+            veto_votes: IterableMap::new(b"vv".as_slice()),
             last_panic_off: 0,
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
@@ -484,6 +485,15 @@ impl Watchdog {
             .unwrap_or_else(|| env::panic_str("no pending change"));
         require!(env::block_timestamp() >= proposed + self.admin_delay, "timelock not elapsed");
         self.admin_pending.remove(action);
+        for k in self
+            .veto_votes
+            .keys()
+            .filter(|k| k.starts_with(&format!("{}:", action)))
+            .map(|k| k.clone())
+            .collect::<Vec<_>>()
+        {
+            self.veto_votes.remove(&k);
+        }
         self.admin_payload.remove(action).unwrap_or_else(|| env::panic_str("missing payload"))
     }
 
@@ -492,18 +502,37 @@ impl Watchdog {
         // A guardian cannot veto their own removal proposal (N3).
         let own_removal = action.starts_with(&format!("guardian_remove:{}", env::predecessor_account_id()));
         require!(!own_removal, "cannot veto own removal");
-        let vetoes = self.veto_votes.entry(action.clone()).or_insert(0);
-        *vetoes += 1;
-        let threshold = self.policy.guard_threshold;
-        if *vetoes >= threshold {
+        let caller = env::predecessor_account_id();
+        let key = format!("{}:{}", action, caller);
+        require!(!self.veto_votes.contains_key(&key), "already voted");
+        self.veto_votes.insert(key, true);
+        let count = self
+            .veto_votes
+            .keys()
+            .filter(|k| k.starts_with(&format!("{}:", action)))
+            .count();
+        if count >= self.policy.guard_threshold as usize {
             self.admin_pending.remove(&action);
             self.admin_payload.remove(&action);
-            Self::event("ADMIN_VETOED", "", &action, *vetoes as u128);
+            // votes cleared with the action — re-proposals start fresh
+            let keys: Vec<String> = self
+                .veto_votes
+                .keys()
+                .filter(|k| k.starts_with(&format!("{}:", action)))
+                .cloned()
+                .collect();
+            for k in &keys {
+                self.veto_votes.remove(k);
+            }
+            Self::event("ADMIN_VETOED", "", &action, count as u128);
         }
     }
 
     pub fn get_veto_votes(&self, action: String) -> u32 {
-        self.veto_votes.get(&action).copied().unwrap_or(0)
+        self.veto_votes
+            .keys()
+            .filter(|k| k.starts_with(&format!("{}:", action)))
+            .count() as u32
     }
 
     // -- admin guardrails recap (F4) ------------------------------------

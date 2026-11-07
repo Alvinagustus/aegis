@@ -724,6 +724,30 @@ fn f4_limit_increase_timelocked() {
     assert_eq!(c.get_policy().limit_for("eth"), 100);
 }
 
+/// N3 regression: one guardian cannot reach the veto threshold alone —
+/// double voting is rejected, and votes reset after an action ends.
+#[test]
+fn n3_single_guardian_cannot_veto_alone() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    guardian(&mut c, GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD2.parse().unwrap());
+    c.propose_panic_cooldown(DAY);
+
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
+    c.guardian_veto("panic_cooldown".into());
+    assert_eq!(c.get_veto_votes("panic_cooldown".into()), 1);
+    expect_panic(|| c.guardian_veto("panic_cooldown".into())); // second vote rejected
+    // threshold is 2 → action still pending
+    assert!(c.get_admin_pending().contains(&"panic_cooldown".to_string()));
+
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD2.parse().unwrap()).build());
+    c.guardian_veto("panic_cooldown".into());
+    assert!(c.get_admin_pending().is_empty());
+    assert_eq!(c.get_veto_votes("panic_cooldown".into()), 0);
+}
+
 /// Risk out of range is rejected.
 #[test]
 fn verdict_validates_inputs() {
