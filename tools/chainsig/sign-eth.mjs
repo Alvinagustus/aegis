@@ -49,9 +49,9 @@ const amountWei = parseEther(AMOUNT_ETH).toString();
 // Contract computes the key from (chain, to, amount, memo_hash, nonce) — we
 // must use the same memo_hash (sha256 of memo) and current contract nonce.
 const memoHash = crypto.createHash("sha256").update(memo).digest("hex");
-const nonce = Number(
-  await account.viewFunction({ contractId: CONTRACT, methodName: "get_nonce", args: {} }),
-).catch(() => 0);
+const nonceRaw = await account.viewFunction({ contractId: CONTRACT, methodName: "get_nonce", args: {} });
+const nonce = Number(nonceRaw);
+if (!Number.isInteger(nonce) || nonce < 0) throw new Error(`bad get_nonce result: ${nonceRaw}`);
 const ih = crypto.createHash("sha256").update(`eth|${TO.toLowerCase()}|${amountWei}|${memoHash}|${nonce}`).digest("hex");
 console.log("intent_hash:", ih);
 console.log("Review command (run first if no verdict on-chain):");
@@ -83,12 +83,12 @@ console.log("Public key:", publicKey);
 const { balance } = await Evm.getBalance(address);
 console.log("Sepolia balance (ETH):", Number(balance) / 1e18);
 
-const nonce = await publicClient.getTransactionCount({ address });
+const ethNonce = await publicClient.getTransactionCount({ address });
 const { transaction, hashesToSign } = await Evm.prepareTransactionForSigning({
   from: address,
   to: TO,
   value: parseEther(AMOUNT_ETH),
-  nonce,
+  nonce: ethNonce,
 });
 console.log("Unsigned tx prepared. Payload hash:", Buffer.from(hashesToSign[0]).toString("hex").slice(0, 32) + "…");
 

@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
+import * as nearAPI from "near-api-js";
 
 const CONTRACT_ID_RE = /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
 
@@ -118,7 +119,6 @@ async function submitOnChain({ intentHash, risk, denied, model }) {
   for (const k of ["WATCHDOG_CONTRACT", "REVIEWER_ACCOUNT", "REVIEWER_KEY"]) {
     if (!process.env[k] || k === "WATCHDOG_CONTRACT" && !CONTRACT_ID_RE.test(process.env[k])) throw new Error(`${k} missing/invalid`);
   }
-  const nearAPI = await import("near-api-js");
   const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
   await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
   const near = await nearAPI.connect({
