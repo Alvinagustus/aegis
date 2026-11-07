@@ -159,6 +159,12 @@ pub struct Watchdog {
     panic_started_at: u64,
     /// Incremented on every evaluate_tx so each verdict binds to one transfer.
     next_nonce: u64,
+    /// Admin timelock: action -> proposed_at (ns). See propose_*/apply_*.
+    admin_pending: HashMap<String, u64>,
+    /// Action -> payload (string-encoded; see propose fns).
+    admin_payload: HashMap<String, String>,
+    /// Delay before a timelocked admin change applies (default 1 day).
+    pub admin_delay: u64,
     // --- inheritance --------------------------------------------------
     /// Last time the operator checked in (ns). Genesis = init time.
     last_checkin: u64,
@@ -209,6 +215,9 @@ impl Watchdog {
             panic: false,
             panic_started_at: 0,
             next_nonce: 1,
+            admin_pending: HashMap::new(),
+            admin_payload: HashMap::new(),
+            admin_delay: ONE_DAY_NANO,
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
             heirs: Vec::new(),
@@ -402,6 +411,102 @@ impl Watchdog {
     }
 
     // ------------------------------------------------------------------
+    // Admin timelock (F4) — sensitive changes take effect only after
+    // `admin_delay`; guardians can veto while the timer runs.
+    // ------------------------------------------------------------------
+
+    const MIN_PANIC_COOLDOWN: u64 = 300_000_000_000; // 5 minutes
+
+    fn admin_propose(&mut self, action: &str, payload: String) {
+        self.only_operator();
+        self.admin_pending.insert(action.to_string(), env::block_timestamp());
+        self.admin_payload.insert(action.to_string(), payload);
+        Self::event("ADMIN_PROPOSED", "", action, 0);
+    }
+
+    fn admin_take(&mut self, action: &str) -> String {
+        let proposed = self
+            .admin_pending
+            .get(action)
+            .copied()
+            .unwrap_or_else(|| env::panic_str("no pending change"));
+        require!(env::block_timestamp() >= proposed + self.admin_delay, "timelock not elapsed");
+        self.admin_pending.remove(action);
+        self.admin_payload.remove(action).unwrap_or_else(|| env::panic_str("missing payload"))
+    }
+
+    pub fn guardian_veto(&mut self, action: String) {
+        require!(self.guardian.contains_key(&env::predecessor_account_id()), "not a guardian");
+        self.admin_pending.remove(&action);
+        self.admin_payload.remove(&action);
+        Self::event("ADMIN_VETOED", "", &action, 0);
+    }
+
+    // -- panic cooldown (min enforced, frozen while panic is on) ----------
+    pub fn propose_panic_cooldown(&mut self, nanoseconds: u64) {
+        require!(!self.panic, "panic is on");
+        require!(nanoseconds >= Self::MIN_PANIC_COOLDOWN, "below minimum 5m");
+        self.admin_propose("panic_cooldown", nanoseconds.to_string());
+    }
+
+    pub fn apply_panic_cooldown(&mut self) {
+        self.only_operator();
+        require!(!self.panic, "panic is on");
+        let v = self.admin_take("panic_cooldown");
+        self.policy.panic_cooldown = v.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        Self::event("PANIC_COOLDOWN_SET", "", "", self.policy.panic_cooldown as u128);
+    }
+
+    // -- daily limit: decreases direct, increases timelocked --------------
+    pub fn set_daily_limit(&mut self, chain: String, limit: U128) {
+        self.only_operator();
+        let current = self.policy.limit_for(&chain);
+        require!(limit.0 <= current, "increase requires timelock (propose_daily_limit)");
+        self.policy.daily_limits.insert(chain.to_lowercase(), limit);
+    }
+
+    pub fn propose_daily_limit(&mut self, chain: String, limit: U128) {
+        self.admin_propose(
+            &format!("daily_limit:{}", chain.to_lowercase()),
+            format!("{}|{}", chain.to_lowercase(), limit.0),
+        );
+    }
+
+    pub fn apply_daily_limit(&mut self, chain: String) {
+        self.only_operator();
+        let payload = self.admin_take(&format!("daily_limit:{}", chain.to_lowercase()));
+        let mut iter = payload.split('|');
+        let ch: String = iter.next().unwrap_or_default().to_string();
+        let amt: u128 = iter.next().unwrap_or("0").parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        self.policy.daily_limits.insert(ch, U128(amt));
+        Self::event("DAILY_LIMIT_SET", &chain, "", amt);
+    }
+
+    // -- reviewer: appointing is direct, removing is timelocked -----------
+    pub fn propose_reviewer_none(&mut self) {
+        self.admin_propose("reviewer_none", String::new());
+    }
+
+    pub fn apply_reviewer_none(&mut self) {
+        self.only_operator();
+        self.admin_take("reviewer_none");
+        self.reviewer = None;
+        Self::event("REVIEWER_SET", "", "", 0);
+    }
+
+    // -- guardian removal is timelocked ------------------------------------
+    pub fn propose_guardian_remove(&mut self, account: AccountId) {
+        self.admin_propose(&format!("guardian_remove:{}", account), account.to_string());
+    }
+
+    pub fn apply_guardian_remove(&mut self, account: AccountId) {
+        self.only_operator();
+        self.admin_take(&format!("guardian_remove:{}", account));
+        self.guardian.remove(&account);
+        Self::event("GUARDIAN_REMOVED", "", &account.to_string(), 0);
+    }
+
+    // ------------------------------------------------------------------
     // Owner controls
     // ------------------------------------------------------------------
 
@@ -417,23 +522,13 @@ impl Watchdog {
         Self::event_hold("HOLD_CANCELLED", id, 0);
     }
 
-    pub fn set_daily_limit(&mut self, chain: String, limit: U128) {
-        self.only_operator();
-        self.policy.daily_limits.insert(chain.to_lowercase(), limit);
-    }
-
     pub fn set_quiet_period_ns(&mut self, nanoseconds: u64) {
         self.only_operator();
         self.policy.quiet_period = nanoseconds;
     }
 
-    /// Owner-tunable panic cooldown (e.g. short for testing, 3 days by default).
-    /// Changing it is public on-chain, and a hostile guardian cannot touch it.
-    pub fn set_panic_cooldown(&mut self, nanoseconds: u64) {
-        self.only_operator();
-        self.policy.panic_cooldown = nanoseconds;
-        Self::event("PANIC_COOLDOWN_SET", "", "", nanoseconds as u128);
-    }
+    /// Panic cooldown change (F4): propose now, apply after the admin delay.
+    /// Use `propose_panic_cooldown` / `apply_panic_cooldown`.
 
     pub fn whitelist_add(&mut self, chain: String, address: String) {
         self.only_operator();
@@ -453,7 +548,9 @@ impl Watchdog {
     }
 
     pub fn guardian_remove(&mut self, account: AccountId) {
+        // Direct removal is disabled (F4): use propose_/apply_.
         self.only_operator();
+        require!(false, "use propose_guardian_remove + apply_guardian_remove");
         self.guardian.remove(&account);
     }
 
@@ -571,8 +668,11 @@ impl Watchdog {
     /// attests its verdict here. Only the operator may appoint one, and only
     /// the reviewer itself may submit verdicts — the operator cannot forge a
     /// "safe" score for its own transfer.
+    /// Appointing a reviewer is direct; *removing* one is timelocked (F4) —
+    /// use propose_reviewer_none / apply_reviewer_none.
     pub fn set_reviewer(&mut self, reviewer: Option<AccountId>) {
         self.only_operator();
+        require!(reviewer.is_some(), "use propose_reviewer_none + apply_reviewer_none");
         self.reviewer = reviewer;
         Self::event("REVIEWER_SET", "", "", 0);
     }

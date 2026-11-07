@@ -394,19 +394,21 @@ fn short_cooldown_panic_cycle() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     c.guardian_add(GUARD1.parse().unwrap());
-    c.set_panic_cooldown(60_000_000_000); // 60 seconds
+    c.propose_panic_cooldown(300_000_000_000); // 5 min (the minimum)
+    testing_env!(ctx.block_timestamp(2 * DAY).build());
+    c.apply_panic_cooldown();
 
-    testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.panic_on();
     assert!(c.is_panicked());
 
-    // still cooling down at t=30s
-    testing_env!(ctx.block_timestamp(30_000_000_000).predecessor_account_id(oper()).build());
+    // still cooling down at t=2d+100s
+    testing_env!(ctx.block_timestamp(2 * DAY + 100_000_000_000).predecessor_account_id(oper()).build());
     expect_panic(|| c.panic_off());
     assert!(c.is_panicked());
 
-    // unlocked at t=61s
-    testing_env!(ctx.block_timestamp(61_000_000_000).predecessor_account_id(oper()).build());
+    // unlocked at t=2d+301s
+    testing_env!(ctx.block_timestamp(2 * DAY + 301_000_000_000).predecessor_account_id(oper()).build());
     c.panic_off();
     assert!(!c.is_panicked());
 }
@@ -425,8 +427,10 @@ fn capsule_rejects_escalation_and_panic_release() {
 
     // panic blocks capsule release even after the date
     testing_env!(ctx.block_timestamp(DAY).predecessor_account_id(oper()).build());
-    c.set_panic_cooldown(30_000_000_000);
-    testing_env!(ctx.block_timestamp(DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
+    c.propose_panic_cooldown(300_000_000_000);
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
+    c.apply_panic_cooldown();
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.panic_on();
     testing_env!(ctx.block_timestamp(3 * DAY).build());
     expect_panic(|| c.release_capsule(id));
@@ -454,7 +458,7 @@ fn inheritance_closes_on_checkin() {
     assert!(!c.is_whitelisted("eth".into(), "heir1.testnet".into()));
 }
 
-/// Only the operator may change the cooldown.
+/// Only the operator may propose admin changes.
 #[test]
 fn only_operator_sets_cooldown() {
     let mut c = contract();
@@ -462,7 +466,7 @@ fn only_operator_sets_cooldown() {
     addr(&mut ctx);
     c.guardian_add(GUARD1.parse().unwrap());
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
-    expect_panic(|| c.set_panic_cooldown(1));
+    expect_panic(|| c.propose_panic_cooldown(DAY));
 }
 
 /// F1 regression (audit poc_f1, inverted): calling evaluate_tx twice to a
@@ -533,6 +537,56 @@ fn f3_verdict_expires() {
     assert_eq!(d, Decision::Deny); // expired (TTL = 10 min)
 }
 
+/// F4 regression (audit poc_f3, inverted): owner cannot zero the panic
+/// cooldown — below-minimum proposals are rejected and changes are
+/// timelocked, so a stolen owner key cannot instantly dismiss a guardian.
+#[test]
+fn f4_panic_cooldown_timelocked_and_minimum() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    c.guardian_add(GUARD1.parse().unwrap());
+
+    // below minimum (5m): cannot even propose
+    expect_panic(|| c.propose_panic_cooldown(0));
+
+    // proposals cannot be applied before admin_delay (1 day)
+    c.propose_panic_cooldown(DAY);
+    expect_panic(|| c.apply_panic_cooldown());
+
+    // guardian veto kills the change
+    c.guardian_add(GUARD1.parse().unwrap());
+    testing_env!(ctx.block_timestamp(3600_000_000_000).predecessor_account_id(GUARD1.parse().unwrap()).build());
+    c.guardian_veto("panic_cooldown".into());
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
+    expect_panic(|| c.apply_panic_cooldown());
+
+    // after the delay, without veto, it applies
+    c.propose_panic_cooldown(DAY);
+    testing_env!(ctx.block_timestamp(4 * DAY).predecessor_account_id(oper()).build());
+    c.apply_panic_cooldown();
+    assert_eq!(c.get_policy().panic_cooldown, DAY);
+}
+
+/// F4: daily limit increases are timelocked; decreases are direct.
+#[test]
+fn f4_limit_increase_timelocked() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    // direct increase rejected
+    expect_panic(|| c.set_daily_limit("eth".into(), U128(u128::MAX)));
+    // decrease is direct
+    c.set_daily_limit("eth".into(), U128(10));
+    assert_eq!(c.get_policy().limit_for("eth"), 10);
+    // increase via propose + apply after delay
+    c.propose_daily_limit("eth".into(), U128(100));
+    expect_panic(|| c.apply_daily_limit("eth".into()));
+    testing_env!(ctx.block_timestamp(2 * DAY).build());
+    c.apply_daily_limit("eth".into());
+    assert_eq!(c.get_policy().limit_for("eth"), 100);
+}
+
 /// Risk out of range is rejected.
 #[test]
 fn verdict_validates_inputs() {
@@ -543,8 +597,11 @@ fn verdict_validates_inputs() {
     expect_panic(|| c.submit_verdict("intent-b".into(), 101, false, "m".into()));
     expect_panic(|| c.submit_verdict("tiny".into(), 1, false, "m".into()));
     // operator cannot appoint itself and then self-approve... it *can*,
-    // but it is on-chain visible — disclosed limitation; ensure unset works
+    // but it is on-chain visible — disclosed limitation; reviewer *removal*
+    // is timelocked (F4), so check the propose/apply path instead
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
-    c.set_reviewer(None);
+    c.propose_reviewer_none();
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
+    c.apply_reviewer_none();
     assert!(c.get_reviewer().is_none());
 }
