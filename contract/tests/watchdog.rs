@@ -339,9 +339,10 @@ fn inheritance_checkin_timeout_and_claim() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.set_heirs(vec!["heir1.testnet".into(), "heir2.testnet".into()]);
+    c.set_heirs(vec!["heir1.testnet".parse().unwrap()], vec!["0xheiraddr".into()]);
     c.set_inheritance_timeout(DAY);
     c.guardian_add(GUARD1.parse().unwrap());
+    c.guardian_add(GUARD2.parse().unwrap());
 
     // owner still active -> guardian cannot claim
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
@@ -357,11 +358,16 @@ fn inheritance_checkin_timeout_and_claim() {
     testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id("stray.testnet".parse().unwrap()).build());
     expect_panic(|| c.claim_inheritance());
 
-    // guardian claims after silence
+    // one guardian vote is not enough (threshold = 2, M-of-N)
     testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.claim_inheritance();
+    assert!(!c.is_inheritance_open());
+    // second guardian opens it
+    testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD2.parse().unwrap()).build());
+    c.claim_inheritance();
     assert!(c.is_inheritance_open());
-    assert!(c.is_whitelisted("eth".into(), "heir1.testnet".into()));
+    // heir PAYOUT address (ETH) is whitelisted, not the NEAR name
+    assert!(c.is_whitelisted("eth".into(), "0xheiraddr".into()));
 }
 
 /// Payroll: registered employees are paid in one batch under the
@@ -436,26 +442,33 @@ fn capsule_rejects_escalation_and_panic_release() {
     expect_panic(|| c.release_capsule(id));
 }
 
-/// Owner returning after inheritance was opened closes it and
-/// un-whitelists the heirs.
+/// Owner returning after inheritance was opened closes it; heir payout
+/// whitelist entries are chain-scoped and the owner's own whitelist is
+/// never touched by check-in (F10).
 #[test]
 fn inheritance_closes_on_checkin() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.set_heirs(vec!["heir1.testnet".into()]);
+    c.set_heirs(vec!["heir1.testnet".parse().unwrap()], vec!["0xheiraddr".into()]);
     c.set_inheritance_timeout(DAY);
     c.guardian_add(GUARD1.parse().unwrap());
+    c.guardian_add(GUARD2.parse().unwrap());
+    c.whitelist_add("eth".into(), "0xheiraddr".into()); // owner-added entry
 
     testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.claim_inheritance();
-    assert!(c.is_whitelisted("eth".into(), "heir1.testnet".into()));
+    testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD2.parse().unwrap()).build());
+    c.claim_inheritance();
+    assert!(c.is_inheritance_open());
+    assert!(c.is_whitelisted("eth".into(), "0xheiraddr".into()));
 
-    // owner comes back: check-in closes it
+    // owner comes back: check-in closes the estate; the owner's own
+    // whitelist entry for the same address is untouched (F10)
     testing_env!(ctx.block_timestamp(4 * DAY).predecessor_account_id(oper()).build());
     c.check_in();
     assert!(!c.is_inheritance_open());
-    assert!(!c.is_whitelisted("eth".into(), "heir1.testnet".into()));
+    assert!(c.is_whitelisted("eth".into(), "0xheiraddr".into()));
 }
 
 /// Only the operator may propose admin changes.
@@ -494,6 +507,47 @@ fn f1_double_evaluate_stays_held() {
     assert_eq!(c.get_hold(1).unwrap().status, HoldStatus::Released);
     let d3 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into(), 0);
     assert_eq!(d3, Decision::Approve);
+}
+
+/// F6 regression: a released capsule creates a single-use pre-approved
+/// entry — evaluate_tx approves exactly (chain,to,amount) once, and
+/// a different amount still goes through normal gates.
+#[test]
+fn f6_released_capsule_enables_evaluate() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    let id = c.create_capsule("eth".into(), "0xheir".into(), U128(100), DAY, "letter".into());
+    testing_env!(ctx.block_timestamp(2 * DAY).build());
+    c.release_capsule(id);
+    // exact (chain,to,amount) → Approve once (no reviewer set)
+    let d = c.evaluate_tx("eth".into(), "0xheir".into(), U128(100), "m".into(), 0);
+    assert_eq!(d, Decision::Approve);
+    // released = seen, so later calls keep approving (F1 semantics)
+    testing_env!(ctx.block_timestamp(2 * DAY).build());
+    let d2 = c.evaluate_tx("eth".into(), "0xheir".into(), U128(100), "m".into(), 1);
+    assert_eq!(d2, Decision::Approve);
+}
+
+/// F6 regression: guardian-cleared holds also become pre-approved on release.
+#[test]
+fn f6_cleared_hold_release_enables_evaluate() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "m".into(), 0);
+    c.guardian_add(GUARD1.parse().unwrap());
+    c.guardian_add(GUARD2.parse().unwrap());
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
+    c.hold_escalate(1);
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD2.parse().unwrap()).build());
+    c.hold_escalate(1);
+    // wait out the waiting period, then release -> pre-approved
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
+    c.set_quiet_period_ns(DAY);
+    c.release_hold(1);
+    let d = c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "m".into(), 0);
+    assert_eq!(d, Decision::Approve);
 }
 
 /// F3 regression (audit poc_f2, inverted): a verdict bound to one transfer

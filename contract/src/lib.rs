@@ -165,12 +165,21 @@ pub struct Watchdog {
     admin_payload: HashMap<String, String>,
     /// Delay before a timelocked admin change applies (default 1 day).
     pub admin_delay: u64,
+    /// Pre-approved transfers: "chain|to|amount" -> true.
+    /// Populated by release_hold (Cleared) and release_capsule; consumed by
+    /// evaluate_tx (single use).
+    preapproved: HashMap<String, bool>,
+    /// Inheritance heirs: NEAR accounts that may call claim_inheritance...
+    heir_accounts: Vec<AccountId>,
+    /// ...and their payout addresses (chain "eth") whitelisted while open.
+    heir_addresses: Vec<String>,
+    /// Guardian votes to open the inheritance (M-of-N, like holds).
+    heir_votes: HashMap<AccountId, bool>,
     // --- inheritance --------------------------------------------------
     /// Last time the operator checked in (ns). Genesis = init time.
     last_checkin: u64,
-    /// Silence after which guardians may open the inheritance (default 90d).
+    /// Silence after which the estate may be opened (default 90d).
     inheritance_timeout: u64,
-    heirs: Vec<String>,
     inheritance_open: bool,
     // --- payroll ------------------------------------------------------
     employees: HashMap<String, Employee>,
@@ -218,9 +227,12 @@ impl Watchdog {
             admin_pending: HashMap::new(),
             admin_payload: HashMap::new(),
             admin_delay: ONE_DAY_NANO,
+            preapproved: HashMap::new(),
+            heir_accounts: Vec::new(),
+            heir_addresses: Vec::new(),
+            heir_votes: HashMap::new(),
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
-            heirs: Vec::new(),
             inheritance_open: false,
             employees: HashMap::new(),
             payroll_runs: 0,
@@ -283,6 +295,17 @@ impl Watchdog {
         } else if self.reviewer.is_some() {
             Self::event_ai(&chain, &to_norm, 0, "DENY_NO_VERDICT");
             return Decision::Deny;
+        }
+
+        // --- rule: pre-approved entry (released hold / capsule) ---------
+        // Vetted by guardians or by time; single use; still limit-checked.
+        let pre_key = format!("{}|{}|{}", chain.to_lowercase(), to_norm, amount.0);
+        if self.preapproved.remove(&pre_key).is_some() {
+            self.seen.insert(address_key.clone(), now);
+            self.record_spend(&day_key, amount.0);
+            self.next_nonce += 1;
+            Self::event("APPROVE_PREAPPROVED", &chain, &to_norm, amount.0);
+            return Decision::Approve;
         }
 
         // --- rule: existing open hold for this (chain, to) --------------
@@ -358,6 +381,9 @@ impl Watchdog {
         require!(eligible, "hold not yet releasable");
         let (chain, to, amount) = (hold.chain.clone(), hold.to.clone(), hold.amount);
         hold.status = HoldStatus::Released;
+        // The released hold becomes a single-use pre-approved entry (F6):
+        // evaluate_tx will approve exactly this (chain, to, amount) once.
+        self.preapproved.insert(format!("{}|{}|{}", chain.to_lowercase(), to, amount.0), true);
         let address_key = format!("{}:{}", chain.to_lowercase(), to);
         self.seen.insert(address_key, now);
         let day = now / ONE_DAY_NANO;
@@ -406,7 +432,10 @@ impl Watchdog {
         require!(hold.status == HoldStatus::Pending, "capsule not pending");
         require!(!panicked, "panic mode");
         require!(env::block_timestamp() >= hold.capsule_release_at, "capsule still sealed");
+        let key = format!("{}|{}|{}", hold.chain.to_lowercase(), hold.to, hold.amount.0);
         hold.status = HoldStatus::Released;
+        // Released capsule = pre-approved entry consumed by evaluate_tx (F6).
+        self.preapproved.insert(key, true);
         Self::event_hold("CAPSULE_RELEASED", id, 0);
     }
 
@@ -558,25 +587,21 @@ impl Watchdog {
     // Inheritance — dead-man's switch over the guarded wallet
     // ------------------------------------------------------------------
 
-    /// Owner heartbeat. Any check-in resets the inheritance clock.
+    /// Owner heartbeat. Resets the clock and closes an open inheritance.
+    /// It never touches the owner's own whitelist entries (F10).
     pub fn check_in(&mut self) {
         self.only_operator();
         self.last_checkin = env::block_timestamp();
-        if self.inheritance_open {
-            self.inheritance_open = false;
-            for heir in self.heirs.clone() {
-                let suffix = format!(":{}", heir);
-                self.whitelisted.retain(|k, _| !k.ends_with(&suffix));
-            }
-        }
+        self.inheritance_open = false;
         Self::event("CHECK_IN", "", "", 0);
     }
 
-    pub fn set_heirs(&mut self, addresses: Vec<String>) {
+    pub fn set_heirs(&mut self, accounts: Vec<AccountId>, addresses: Vec<String>) {
         self.only_operator();
-        require!(!addresses.is_empty(), "at least one heir");
-        self.heirs = addresses.iter().map(|a| a.to_lowercase()).collect();
-        Self::event("HEIRS_SET", "", "", self.heirs.len() as u128);
+        require!(!accounts.is_empty() || !addresses.is_empty(), "at least one heir");
+        self.heir_accounts = accounts;
+        self.heir_addresses = addresses.iter().map(|a| a.to_lowercase()).collect();
+        Self::event("HEIRS_SET", "", "", (self.heir_accounts.len() + self.heir_addresses.len()) as u128);
     }
 
     pub fn set_inheritance_timeout(&mut self, nanoseconds: u64) {
@@ -586,24 +611,33 @@ impl Watchdog {
         Self::event("INHERITANCE_TIMEOUT_SET", "", "", nanoseconds as u128);
     }
 
-    /// Open the inheritance: callable by a guardian or a named heir once
-    /// the operator has been silent for the timeout. Heirs are then
-    /// whitelisted, so `evaluate_tx` can approve releases to them
-    /// (still gated by AI verdict + daily limit).
+    /// Open the inheritance once the operator has been silent for the
+    /// timeout. Requires the guardian **threshold** (M-of-N) to vote, or a
+    /// named heir account. Heir payout addresses become whitelisted (chain
+    /// "eth") while the estate is open — releases still need AI verdicts
+    /// and stay under the daily limit.
     pub fn claim_inheritance(&mut self) {
         let caller = env::predecessor_account_id();
         let now = env::block_timestamp();
         require!(now.saturating_sub(self.last_checkin) >= self.inheritance_timeout, "owner still active");
-        let is_guardian = self.guardian.contains_key(&caller);
-        let is_heir = self.heirs.iter().any(|h| h == &caller.as_str());
-        require!(is_guardian || is_heir, "only guardian or heir");
         require!(!self.inheritance_open, "already open");
+        let is_guardian = self.guardian.contains_key(&caller);
+        let is_heir = self.heir_accounts.iter().any(|h| h == &caller);
+        require!(is_guardian || is_heir, "only guardian or heir");
+
+        if is_guardian {
+            self.heir_votes.insert(caller, true);
+            let votes = self.heir_votes.len() as u32;
+            if votes < self.policy.guard_threshold {
+                Self::event("INHERITANCE_VOTE", "", "", votes as u128);
+                return;
+            }
+        }
         self.inheritance_open = true;
-        for heir in self.heirs.clone() {
-            // heir whitelist keys are chain-scoped after F10; default to `eth`
+        for heir in self.heir_addresses.clone() {
             self.whitelisted.insert(format!("eth:{}", heir), now);
         }
-        Self::event("INHERITANCE_OPEN", "", "", self.heirs.len() as u128);
+        Self::event("INHERITANCE_OPEN", "", "", self.heir_addresses.len() as u128);
     }
 
     // ------------------------------------------------------------------
@@ -804,7 +838,7 @@ impl Watchdog {
     }
 
     pub fn get_heirs(&self) -> Vec<String> {
-        self.heirs.clone()
+        self.heir_addresses.clone()
     }
 
     pub fn is_inheritance_open(&self) -> bool {
