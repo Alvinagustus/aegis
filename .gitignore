@@ -1,0 +1,18 @@
+# build artifacts
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+
+# secrets & env (never committed)
+.env
+.env.local
+
+# logs
+*.log
+
+CHANGELOG.md
+demo.html
+docs/claude-demo-prompt.md
+docs/demo-script.md

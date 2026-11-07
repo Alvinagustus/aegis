@@ -1,0 +1,10 @@
+{
+  "name": "aegis-bench",
+  "version": "0.1.0",
+  "description": "Aegis red-team benchmark: 10 attacks + 4 benign controls scored by the AI reviewer (NEAR AI Cloud TEE) and decided by the on-chain policy contract",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "near-api-js": "^5.1.1"
+  }
+}

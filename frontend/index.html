@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#070a10" />
+    <meta name="description" content="Aegis — the policy layer for money that protects itself. Live window into the on-chain policy engine (NEAR testnet + Sepolia)." />
+    <title>Aegis — the policy layer for money</title>
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="bg" aria-hidden="true"></div>
+
+    <!-- ───────── Top bar ───────── -->
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Aegis home">
+        <svg class="brand-mark" viewBox="0 0 64 64" width="34" height="34" aria-hidden="true"><defs><linearGradient id="bg-g" gradientUnits="userSpaceOnUse" x1="10" y1="10" x2="54" y2="54"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><mask id="bg-m" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><path d="M0 44H64" stroke="#000" stroke-width="11"/></mask></defs><g mask="url(#bg-m)" fill="none" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 57V30a23 23 0 0 1 46 0v27" stroke="#eef3fb"/><path d="M21 57V31a11 11 0 0 1 22 0v26" stroke="url(#bg-g)"/></g><path d="M14 44H60" fill="none" stroke="url(#bg-g)" stroke-width="5.5" stroke-linecap="round"/></svg>
+        <span class="brand-name">Aegis</span>
+      </a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#overview">Overview</a>
+        <a href="#transfer">Transfer</a>
+        <a href="#controls">Controls</a>
+        <a href="#modes">Holds &amp; modes</a>
+        <a href="#setup">Setup</a>
+      </nav>
+      <div class="topbar-right">
+        <span class="chip net"><span class="dot live"></span>NEAR testnet</span>
+        <span id="who" class="who"><span class="dot"></span>Read-only</span>
+        <span id="roles" class="roles"></span>
+        <button id="connect" class="btn btn-primary btn-sm" type="button">Connect wallet</button>
+      </div>
+    </header>
+
+    <!-- ───────── Hero: shield status ───────── -->
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <p class="eyebrow">Live policy window · read by anyone</p>
+        <h1>A deadbolt for<br />cross-chain spending.</h1>
+        <p class="lead">
+          Every transfer replays through an on-chain policy and an AI risk review before it can be signed.
+          This page reads the rules straight from the contract — there is no hidden admin API.
+        </p>
+        <div class="active-line">
+          <span class="muted">Active contract</span>
+          <code id="active-contract" class="pill-code">—</code>
+          <button id="refresh" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <div class="shield-card" id="shield" data-state="loading">
+        <div class="shield-top">
+          <svg class="shield-svg" viewBox="0 0 64 64" width="84" height="84" role="img" aria-label="Shield status">
+            <path class="shield-body" d="M32 5 54 13v18c0 13-8.5 22-22 28C18.5 53 10 44 10 31V13z" stroke-width="4" stroke-linejoin="round" />
+            <path class="g g-ok" d="M22 32.500l7 7L43 25" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+            <path class="g g-warn" d="M32 22v13M32 42v.5" fill="none" stroke-width="5.500" stroke-linecap="round" />
+            <path class="g g-bad" d="M24 24l16 16M40 24 24 40" fill="none" stroke-width="5" stroke-linecap="round" />
+          </svg>
+          <div>
+            <div class="shield-title" id="shield-title">Reading the contract…</div>
+            <div class="shield-sub" id="shield-sub">Checking policy, guardians and reviewer.</div>
+          </div>
+        </div>
+        <ul id="health" class="health"></ul>
+      </div>
+    </section>
+
+    <div id="stats" class="stats" aria-live="polite"></div>
+
+    <main class="main">
+      <!-- ───────── Overview ───────── -->
+      <div class="grid" id="overview">
+        <section class="card c-5" aria-labelledby="h-accounts">
+          <div class="card-head"><h2 id="h-accounts">Accounts</h2></div>
+          <table id="accounts" class="kv"></table>
+          <p class="hint">Click any account to open it in the NEAR explorer.</p>
+        </section>
+
+        <section class="card c-7" aria-labelledby="h-policy">
+          <div class="card-head"><h2 id="h-policy">Policy</h2><span class="hint">live from the contract</span></div>
+          <table id="policy" class="kv"></table>
+        </section>
+
+        <section class="card c-12" aria-labelledby="h-verdicts">
+          <div class="card-head">
+            <div>
+              <h2 id="h-verdicts">AI review verdicts</h2>
+              <p class="hint">A reviewer account attests a risk score on-chain. No verdict → denied. Verdicts are bound to the exact transfer (chain, to, amount, memo hash, nonce), single-use and expire after a TTL.</p>
+            </div>
+          </div>
+          <table id="verdicts" class="kv"></table>
+          <form id="verdict-form" class="inline-form">
+            <label class="sr" for="verdict-hash">Intent hash</label>
+            <input id="verdict-hash" name="hash" placeholder="Look up any intent hash (64 hex chars)…" autocomplete="off" spellcheck="false" />
+            <button class="btn" type="submit">Look up</button>
+          </form>
+          <div id="verdict-out" class="out"></div>
+        </section>
+      </div>
+
+      <!-- ───────── Transfer wizard ───────── -->
+      <section class="card" id="transfer-card" aria-labelledby="h-transfer">
+        <div class="card-head" id="transfer">
+          <div>
+            <h2 id="h-transfer">Send a guarded transfer</h2>
+            <p class="hint">Three steps. The AI verdict and MPC signing stay off the browser so keys never touch the page.</p>
+          </div>
+        </div>
+        <ol class="steps">
+          <li class="step" id="step-1">
+            <span class="step-n">1</span>
+            <div class="step-body">
+              <h3>Describe the intent</h3>
+              <form id="transfer" class="form-grid">
+                <label>Chain <input name="chain" value="eth" required /></label>
+                <label>To <input name="to" placeholder="0x…" required autocomplete="off" spellcheck="false" /></label>
+                <label>Amount (wei) <input name="amount" value="1000000000000000" inputmode="numeric" required /></label>
+                <label>Memo <input name="memo" value="aegis demo" /></label>
+                <div class="form-action"><button class="btn btn-primary" type="submit">Compute hash &amp; simulate</button></div>
+              </form>
+              <div id="transfer-out" class="out"></div>
+            </div>
+          </li>
+          <li class="step" id="step-2">
+            <span class="step-n">2</span>
+            <div class="step-body">
+              <h3>Get an AI verdict <span class="hint">(local agent)</span></h3>
+              <p class="hint">Run the reviewer once so a verdict exists on-chain for this exact intent.</p>
+              <pre class="cmd" id="cmd-review"><code>Fill in step 1 first…</code></pre>
+              <div class="actions"><button id="copy-review" class="btn btn-ghost btn-sm" type="button" disabled>Copy command</button></div>
+            </div>
+          </li>
+          <li class="step" id="step-3">
+            <span class="step-n">3</span>
+            <div class="step-body">
+              <h3>Submit to the contract &amp; sign</h3>
+              <p class="hint">The operator wallet submits <code>evaluate_tx</code>. Only an <b>Approve</b> may be signed via Chain Signatures.</p>
+              <div class="actions">
+                <button id="do-evaluate" class="btn btn-primary" type="button" disabled>Submit evaluate_tx</button>
+                <button id="do-sign" class="btn" type="button" disabled>Copy MPC sign command</button>
+              </div>
+              <p class="hint" id="evaluate-hint"></p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <!-- ───────── Controls ───────── -->
+      <div class="grid" id="controls">
+        <section class="card c-6" aria-labelledby="h-owner">
+          <div class="card-head"><div><h2 id="h-owner">Owner actions</h2><p class="hint">Signed by the operator wallet.</p></div></div>
+          <form id="whitelist-form" class="inline-form">
+            <label class="sr" for="whitelist-address">Address to whitelist</label>
+            <input id="whitelist-address" name="address" placeholder="0x… address to whitelist" autocomplete="off" spellcheck="false" />
+            <button class="btn" type="submit" id="act-whitelist" data-role="operator">Whitelist</button>
+          </form>
+          <form id="cancel-form" class="inline-form">
+            <label class="sr" for="cancel-id">Hold id</label>
+            <input id="cancel-id" name="id" inputmode="numeric" placeholder="Hold id to cancel" />
+            <button class="btn" type="submit" id="act-cancel" data-role="operator">Cancel hold</button>
+          </form>
+          <form id="release-form" class="inline-form">
+            <label class="sr" for="release-id">Hold id</label>
+            <input id="release-id" name="id" inputmode="numeric" placeholder="Hold id to release (when eligible)" />
+            <button class="btn" type="submit" id="act-release" data-role="operator">Release hold</button>
+          </form>
+          <div class="actions">
+            <button id="act-checkin" class="btn" type="button" data-role="operator">Check in</button>
+            <button id="act-payroll" class="btn" type="button" data-role="operator">Run payroll (eth)</button>
+            <button id="act-panicoff" class="btn" type="button" data-role="operator">Turn panic off</button>
+          </div>
+        </section>
+
+        <section class="card c-6" aria-labelledby="h-guardian">
+          <div class="card-head"><div><h2 id="h-guardian">Guardian actions</h2><p class="hint">Signed by a guardian wallet.</p></div></div>
+          <form id="escalate-form" class="inline-form">
+            <label class="sr" for="escalate-id">Hold id</label>
+            <input id="escalate-id" name="id" inputmode="numeric" placeholder="Hold id to escalate" />
+            <button class="btn" type="submit" id="act-escalate" data-role="guardian">Escalate hold</button>
+          </form>
+          <div class="actions">
+            <button id="act-panicon" class="btn btn-danger" type="button" data-role="guardian">Panic — freeze everything</button>
+          </div>
+          <p class="hint">Panic freezes all spending at once. Only the owner can unfreeze it, after the cooldown.</p>
+        </section>
+
+        <div id="action-out" class="out c-12"></div>
+      </div>
+
+      <!-- ───────── Holds & modes ───────── -->
+      <div class="grid" id="modes">
+        <section class="card c-12" aria-labelledby="h-holds">
+          <div class="card-head"><div><h2 id="h-holds">Holds &amp; time capsules</h2><p class="hint">First-seen addresses are held for a quiet period; capsules seal funds until a date.</p></div></div>
+          <div id="holds" class="holds"></div>
+        </section>
+
+        <section class="card c-6" aria-labelledby="h-inh">
+          <div class="card-head"><h2 id="h-inh">Digital inheritance</h2></div>
+          <table id="inheritance" class="kv"></table>
+        </section>
+
+        <section class="card c-6" aria-labelledby="h-pay">
+          <div class="card-head"><h2 id="h-pay">Payroll</h2></div>
+          <table id="payroll" class="kv"></table>
+        </section>
+
+        <section class="card c-12" aria-labelledby="h-chain">
+          <div class="card-head"><h2 id="h-chain">Chain Signatures → Ethereum Sepolia</h2></div>
+          <table id="chainsig" class="kv"></table>
+        </section>
+      </div>
+
+      <!-- ───────── Setup ───────── -->
+      <details class="card setup" id="setup">
+        <summary><span>Setup &amp; deploy</span><span class="hint">create your own Aegis contract</span></summary>
+        <p class="hint">Wallets that hand out function-call keys (Meteor, Sender) cannot deploy contracts. Use MyNearWallet or Nightly, or the CLI: <code>./setup.sh &lt;your-account&gt; &lt;contract-account&gt;</code>.</p>
+        <form id="deploy-form" class="form-grid">
+          <label>Contract account (sub-account of yours)
+            <input name="account" id="deploy-account" placeholder="aegis.yourname.testnet" required autocomplete="off" />
+          </label>
+          <label>Fund for storage + init (NEAR)
+            <input name="fund" id="deploy-fund" value="5" inputmode="decimal" required />
+          </label>
+          <label>Guardian threshold
+            <input name="threshold" value="1" inputmode="numeric" required />
+          </label>
+          <div class="form-action"><button class="btn btn-primary" type="submit">1. Create + deploy + init</button></div>
+        </form>
+        <p class="hint" id="deploy-need"></p>
+        <form id="configure-form" class="form-grid">
+          <label>AI reviewer account (optional)
+            <input name="reviewer" placeholder="reviewer.yourname.testnet" autocomplete="off" />
+          </label>
+          <label>Guardian account (optional)
+            <input name="guardian" placeholder="guardian.yourname.testnet" autocomplete="off" />
+          </label>
+          <div class="form-action"><button class="btn" type="submit">2. Set reviewer + guardian</button></div>
+        </form>
+        <form id="switch-form" class="form-grid">
+          <label>Switch the dashboard to another contract
+            <input name="contract" placeholder="aegis.yourname.testnet" autocomplete="off" />
+          </label>
+          <div class="form-action"><button class="btn" type="submit">Switch</button></div>
+        </form>
+        <div id="deploy-out" class="out"></div>
+      </details>
+
+      <!-- ───────── Proof ───────── -->
+      <section class="card" id="proof" aria-labelledby="h-proof">
+        <div class="card-head"><div><h2 id="h-proof">Recorded guarded transfer</h2><p class="hint">A proven run on the demo deployment.</p></div></div>
+        <ol class="timeline">
+          <li><b>AI review</b><span>0.001 ETH intent scored <b>risk 5</b>, attested with <code>submit_verdict</code>.</span></li>
+          <li><b>Policy</b><span><code>simulate_tx</code> → <b>Approve</b> (whitelisted, within the daily limit).</span></li>
+          <li><b>MPC</b><span>NEAR MPC signed the Sepolia payload.</span></li>
+          <li><b>Broadcast</b><span><a href="https://sepolia.etherscan.io/tx/0x2c24530d0f2197093d1583c0ad8cdd54f8ff8002e1bf41f3c69eab05a9eee507" target="_blank" rel="noreferrer">0x2c24530d…eee507</a> mined, status <b>success</b>.</span></li>
+          <li><b>The attack</b><span>Seed-phrase phishing scored <b>risk 100</b> → verdict denied → <b>Deny</b> even for a whitelisted address.</span></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Aegis · built at NEAR Hackathon · tracks <code>open</code> + <code>security</code></span>
+      <span>testnet only</span>
+    </footer>
+
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

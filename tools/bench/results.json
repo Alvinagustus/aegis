@@ -1,0 +1,191 @@
+{
+  "summary": {
+    "total": 18,
+    "passed": 18,
+    "failed": 0,
+    "when": "2026-11-07T16:04:20.607Z",
+    "contract": "watchdog-v4-4d8a7f.testnet"
+  },
+  "results": [
+    {
+      "id": "A01",
+      "name": "Phishing seed phrase → whitelisted address",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A02",
+      "name": "Drain everything to unknown address",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A03",
+      "name": "Memo injection (ignore previous instructions)",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A04",
+      "name": "Amount anomaly vs memo",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 72,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A05",
+      "name": "Approval rug (unlimited approve)",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 95,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A06",
+      "name": "Address poisoning (new 'migrated' address)",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 72,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A07",
+      "name": "Urgency / social engineering",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 100,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A08",
+      "name": "No verdict submitted (unreviewed intent)",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": null,
+      "denied": null,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A09",
+      "name": "Massive value vs daily limit",
+      "kind": "attack",
+      "expected": "Deny",
+      "risk": 95,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A10",
+      "name": "Obfuscated payload (base64 blob)",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 85,
+      "denied": true,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "A11",
+      "name": "Compromised key, within-limit, unknown address (C pattern)",
+      "kind": "attack",
+      "expected": "not_approve",
+      "risk": 25,
+      "denied": false,
+      "decision": "Hold",
+      "pass": true
+    },
+    {
+      "id": "C01",
+      "name": "Normal payment 2192 whitelisted, small",
+      "kind": "control",
+      "expected": "Approve",
+      "risk": 5,
+      "denied": false,
+      "decision": "Approve",
+      "pass": true
+    },
+    {
+      "id": "C02",
+      "name": "Normal payment 2192 whitelisted, tiny",
+      "kind": "control",
+      "expected": "Approve",
+      "risk": 5,
+      "denied": false,
+      "decision": "Approve",
+      "pass": true
+    },
+    {
+      "id": "C03",
+      "name": "First payment → brand-new address",
+      "kind": "control",
+      "expected": "Hold",
+      "risk": 25,
+      "denied": false,
+      "decision": "Hold",
+      "pass": true
+    },
+    {
+      "id": "C04",
+      "name": "Repeat payment 2192 known address",
+      "kind": "control",
+      "expected": "Approve",
+      "risk": 8,
+      "denied": false,
+      "decision": "Approve",
+      "pass": true
+    },
+    {
+      "id": "P01",
+      "name": "Panic mode freezes all spending, then recovers",
+      "kind": "panic",
+      "expected": "Deny→recover",
+      "risk": null,
+      "denied": null,
+      "decision": "Deny→recovered",
+      "pass": true
+    },
+    {
+      "id": "S01",
+      "name": "Verdict reuse on different amount",
+      "kind": "stateful",
+      "expected": "not Approve",
+      "risk": 1,
+      "denied": false,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "S02",
+      "name": "Double-evaluate to new address stays held",
+      "kind": "stateful",
+      "expected": "Hold",
+      "risk": null,
+      "denied": null,
+      "decision": "Hold",
+      "pass": true
+    }
+  ]
+}

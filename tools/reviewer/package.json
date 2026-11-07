@@ -1,0 +1,10 @@
+{
+  "name": "watchdog-ai-reviewer",
+  "version": "0.1.0",
+  "description": "AI risk reviewer agent for Aegis — classifies transfer intents via NEAR AI Cloud (TEE) and attests verdicts on-chain",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "near-api-js": "^5.1.0"
+  }
+}
