@@ -139,15 +139,13 @@ fn chain_bucket(chain: &str) -> String {
 }
 
 fn intent_hash_for(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: u64) -> String {
-    let data = format!(
-        "{}|{}|{}|{}|{}",
-        chain.to_lowercase(),
-        to.to_lowercase(),
-        amount,
-        memo_hash,
-        nonce
-    );
-    env::sha256(data.as_bytes())
+    // Length-prefixed borsh tuple (N9): no delimiter collisions.
+    use near_sdk::borsh::BorshSerialize;
+    let mut v = Vec::new();
+    (chain.to_lowercase(), to.to_lowercase(), amount, memo_hash.to_lowercase(), nonce)
+        .serialize(&mut v)
+        .unwrap();
+    env::sha256(&v)
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect()
