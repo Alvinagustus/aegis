@@ -49,10 +49,10 @@ fn whitelist_is_approved_and_spends_limit() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     as_operator(&mut ctx);
-    c.whitelist_add("0xcold".into());
+    c.whitelist_add("eth".into(), "0xcold".into());
     assert_eq!(c.evaluate_tx("eth".into(), "0xCOLD".into(), U128(10), "intent-a".into()), Decision::Approve);
     assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(10), "intent-a".into()), Decision::Approve);
-    c.set_daily_limit(U128(20));
+    c.set_daily_limit("eth".into(), U128(20));
     assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(10), "intent-a".into()), Decision::Deny);
 }
 
@@ -162,12 +162,12 @@ fn owner_can_unfreeze_and_owner_only() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     c.guardian_add(GUARD1.parse().unwrap());
-    c.whitelist_add("0xcold".into());
+    c.whitelist_add("eth".into(), "0xcold".into());
 
     // guardian should not be able to whitelist (their use is only escalation/panic)
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
-    expect_panic(|| c.whitelist_add("0xevil".into()));
-    assert!(!c.is_whitelisted("0xevil".into()));
+    expect_panic(|| c.whitelist_add("eth".into(), "0xevil".into()));
+    assert!(!c.is_whitelisted("eth".into(), "0xevil".into()));
 }
 
 const REVIEWER: &str = "ai-reviewer.testnet";
@@ -188,7 +188,7 @@ fn no_verdict_means_no_transfer() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("0xcold".into());
+    c.whitelist_add("eth".into(), "0xcold".into());
     // even a whitelisted address is blocked until the reviewer signs off
     assert_eq!(
         c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "intent-b".into()),
@@ -203,7 +203,7 @@ fn ai_deny_overrides_whitelist() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("0xcold".into());
+    c.whitelist_add("eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     c.submit_verdict("intent-b".into(), 99, true, "watchdog-risk-v1".into());
@@ -222,7 +222,7 @@ fn ai_clears_transfers() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("0xcold".into());
+    c.whitelist_add("eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     c.submit_verdict("intent-b".into(), 5, false, "watchdog-risk-v1".into());
@@ -244,7 +244,7 @@ fn high_risk_score_blocks_transfer() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("0xcold".into());
+    c.whitelist_add("eth".into(), "0xcold".into());
     c.set_ai_deny_threshold(70);
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
@@ -355,7 +355,7 @@ fn inheritance_checkin_timeout_and_claim() {
     testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.claim_inheritance();
     assert!(c.is_inheritance_open());
-    assert!(c.is_whitelisted("heir1.testnet".into()));
+    assert!(c.is_whitelisted("eth".into(), "heir1.testnet".into()));
 }
 
 /// Payroll: registered employees are paid in one batch under the
@@ -367,10 +367,10 @@ fn payroll_batch_under_limit() {
     addr(&mut ctx);
     c.add_employee("0xa1".into(), U128(100));
     c.add_employee("0xb2".into(), U128(200));
-    c.set_daily_limit(U128(1000));
+    c.set_daily_limit("eth".into(), U128(1000));
     assert_eq!(c.run_payroll("eth".into()), 2);
     assert_eq!(c.get_payroll_runs(), 1);
-    assert!(c.is_whitelisted("0xa1".into()));
+    assert!(c.is_whitelisted("eth".into(), "0xa1".into()));
 
     // oversized batch rejected whole
     c.add_employee("0xc3".into(), U128(900));
@@ -439,13 +439,13 @@ fn inheritance_closes_on_checkin() {
 
     testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.claim_inheritance();
-    assert!(c.is_whitelisted("heir1.testnet".into()));
+    assert!(c.is_whitelisted("eth".into(), "heir1.testnet".into()));
 
     // owner comes back: check-in closes it
     testing_env!(ctx.block_timestamp(4 * DAY).predecessor_account_id(oper()).build());
     c.check_in();
     assert!(!c.is_inheritance_open());
-    assert!(!c.is_whitelisted("heir1.testnet".into()));
+    assert!(!c.is_whitelisted("eth".into(), "heir1.testnet".into()));
 }
 
 /// Only the operator may change the cooldown.

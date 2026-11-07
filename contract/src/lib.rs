@@ -90,8 +90,9 @@ pub struct AiVerdict {
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug)]
 pub struct Policy {
-    /// Spend cap per UTC day, in wei-equivalent per-chain units.
-    pub daily_limit: U128,
+    /// Spend cap per UTC day per chain, in that chain's own smallest unit
+    /// (wei for EVM chains, sats for BTC). See `limit_for`.
+    pub daily_limits: HashMap<String, U128>,
     /// First-seen addresses are held for this long.
     pub quiet_period: u64,
     /// Guardians needed to clear a held transfer.
@@ -105,6 +106,19 @@ pub struct Policy {
 
 /// Default AI gate: score >= this, or an explicit `denied`, blocks the tx.
 pub const AI_DENY_THRESHOLD: u8 = 70;
+
+impl Policy {
+    /// Daily spend limit for a chain in that chain's own units.
+    /// Chains without an explicit limit fall back to the `eth` limit.
+    pub fn limit_for(&self, chain: &str) -> u128 {
+        let c = chain.to_lowercase();
+        self.daily_limits
+            .get(&c)
+            .map(|l| l.0)
+            .or_else(|| self.daily_limits.get("eth").map(|l| l.0))
+            .unwrap_or(0)
+    }
+}
 
 #[near(contract_state)]
 pub struct Watchdog {
@@ -155,7 +169,12 @@ impl Watchdog {
             ai_deny_threshold: AI_DENY_THRESHOLD,
             verdicts: HashMap::new(),
             policy: Policy {
-                daily_limit: U128(2_000_000_000_000_000_000_000_000), // 2000 ETH-wei ≈ 0.002 ETH
+                daily_limits: {
+                    let mut m = HashMap::new();
+                    m.insert("eth".to_string(), U128(10_000_000_000_000_000)); // 0.01 ETH in wei
+                    m.insert("btc".to_string(), U128(1_000_000)); // 0.01 BTC in sats
+                    m
+                },
                 quiet_period: ONE_DAY_NANO,
                 guard_threshold,
                 known_grace: 30 * ONE_DAY_NANO,
@@ -210,7 +229,7 @@ impl Watchdog {
         let day = now / ONE_DAY_NANO;
         let day_key = format!("{}|{}", day, chain.to_lowercase());
         let used = *self.spent.get(&day_key).unwrap_or(&0);
-        if used.saturating_add(amount.0) > self.policy.daily_limit.0 {
+        if used.saturating_add(amount.0) > self.policy.limit_for(&chain) {
             Self::event("DENY_DAILY_LIMIT", &chain, &to_norm, amount.0);
             return Decision::Deny;
         }
@@ -231,7 +250,7 @@ impl Watchdog {
         // --- rule: first-seen address -> hold for the quiet period --------
         let first_seen = self.seen.get(&address_key).copied();
         let known = matches!(first_seen, Some(t) if now.saturating_sub(t) <= self.policy.known_grace)
-            || self.whitelisted.contains_key(&to_norm);
+            || self.whitelisted.contains_key(&address_key);
         if !known {
             self.seen.insert(address_key.clone(), now);
         }
@@ -333,9 +352,9 @@ impl Watchdog {
         Self::event_hold("HOLD_CANCELLED", id, 0);
     }
 
-    pub fn set_daily_limit(&mut self, limit: U128) {
+    pub fn set_daily_limit(&mut self, chain: String, limit: U128) {
         self.only_operator();
-        self.policy.daily_limit = limit;
+        self.policy.daily_limits.insert(chain.to_lowercase(), limit);
     }
 
     pub fn set_quiet_period_ns(&mut self, nanoseconds: u64) {
@@ -351,14 +370,14 @@ impl Watchdog {
         Self::event("PANIC_COOLDOWN_SET", "", "", nanoseconds as u128);
     }
 
-    pub fn whitelist_add(&mut self, address: String) {
+    pub fn whitelist_add(&mut self, chain: String, address: String) {
         self.only_operator();
-        self.whitelisted.insert(address.to_lowercase(), env::block_timestamp());
+        self.whitelisted.insert(format!("{}:{}", chain.to_lowercase(), address.to_lowercase()), env::block_timestamp());
     }
 
-    pub fn whitelist_remove(&mut self, address: String) {
+    pub fn whitelist_remove(&mut self, chain: String, address: String) {
         self.only_operator();
-        self.whitelisted.remove(&address.to_lowercase());
+        self.whitelisted.remove(&format!("{}:{}", chain.to_lowercase(), address.to_lowercase()));
     }
 
     /// Owner can add guardians (demo simplification; a production version
@@ -384,7 +403,8 @@ impl Watchdog {
         if self.inheritance_open {
             self.inheritance_open = false;
             for heir in self.heirs.clone() {
-                self.whitelisted.remove(&heir);
+                let suffix = format!(":{}", heir);
+                self.whitelisted.retain(|k, _| !k.ends_with(&suffix));
             }
         }
         Self::event("CHECK_IN", "", "", 0);
@@ -418,7 +438,8 @@ impl Watchdog {
         require!(!self.inheritance_open, "already open");
         self.inheritance_open = true;
         for heir in self.heirs.clone() {
-            self.whitelisted.insert(heir, now);
+            // heir whitelist keys are chain-scoped after F10; default to `eth`
+            self.whitelisted.insert(format!("eth:{}", heir), now);
         }
         Self::event("INHERITANCE_OPEN", "", "", self.heirs.len() as u128);
     }
@@ -442,8 +463,12 @@ impl Watchdog {
 
     pub fn remove_employee(&mut self, address: String) {
         self.only_operator();
-        self.employees.remove(&address.to_lowercase());
-        Self::event("EMPLOYEE_REMOVED", "", &address.to_lowercase(), 0);
+        let addr = address.to_lowercase();
+        self.employees.remove(&addr);
+        // F9: a removed employee must not keep skipping the quiet period.
+        self.whitelisted.retain(|k, _| !k.ends_with(&format!(":{}", addr)));
+        self.seen.retain(|k, _| !k.ends_with(&format!(":{}", addr)));
+        Self::event("EMPLOYEE_REMOVED", "", &addr, 0);
     }
 
     /// Run one payroll batch. Employees are treated like whitelisted
@@ -459,12 +484,13 @@ impl Watchdog {
 
         let staff: Vec<Employee> = self.employees.values().cloned().collect();
         let total: u128 = staff.iter().map(|e| e.salary.0).sum();
-        require!(used.saturating_add(total) <= self.policy.daily_limit.0, "payroll exceeds daily limit");
+        require!(used.saturating_add(total) <= self.policy.limit_for(&chain), "payroll exceeds daily limit");
 
         let now = env::block_timestamp();
         for emp in &staff {
-            self.seen.insert(format!("{}:{}", chain.to_lowercase(), emp.address), now);
-            self.whitelisted.entry(emp.address.clone()).or_insert(now);
+            let key = format!("{}:{}", chain.to_lowercase(), emp.address);
+            self.seen.insert(key.clone(), now);
+            self.whitelisted.entry(key).or_insert(now);
         }
         self.record_spend(&day_key, total);
         self.payroll_runs += 1;
@@ -615,8 +641,8 @@ impl Watchdog {
         self.panic
     }
 
-    pub fn is_whitelisted(&self, address: String) -> bool {
-        self.whitelisted.contains_key(&address.to_lowercase())
+    pub fn is_whitelisted(&self, chain: String, address: String) -> bool {
+        self.whitelisted.contains_key(&format!("{}:{}", chain.to_lowercase(), address.to_lowercase()))
     }
 
     pub fn get_hold(&self, id: u64) -> Option<Hold> {
@@ -638,7 +664,7 @@ impl Watchdog {
         let day = env::block_timestamp() / ONE_DAY_NANO;
         let day_key = format!("{}|{}", day, chain.to_lowercase());
         let used = *self.spent.get(&day_key).unwrap_or(&0);
-        if used.saturating_add(amount.0) > self.policy.daily_limit.0 {
+        if used.saturating_add(amount.0) > self.policy.limit_for(&chain) {
             return Decision::Deny;
         }
         if let Some(verdict) = self.verdicts.get(&intent_hash) {
@@ -651,7 +677,7 @@ impl Watchdog {
         let key = format!("{}:{}", chain.to_lowercase(), to_norm);
         let first_seen = self.seen.get(&key);
         let known = matches!(first_seen, Some(t) if env::block_timestamp().saturating_sub(*t) <= self.policy.known_grace)
-            || self.whitelisted.contains_key(&to_norm);
+            || self.whitelisted.contains_key(&key);
         if known {
             Decision::Approve
         } else {
