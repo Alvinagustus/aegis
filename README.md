@@ -1,3 +1,5 @@
+<p align="center"><img alt="Aegis" src="docs/assets/banner.png" width="100%"></p>
+
 # 🛡️ Aegis
 
 **The policy layer for money that protects itself — a shield, not a watchdog.**
