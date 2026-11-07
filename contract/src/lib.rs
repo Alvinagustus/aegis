@@ -16,6 +16,7 @@
 //! owner can cancel any hold until it is executed.
 
 use near_sdk::json_types::U128;
+use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{env, log, near, require, AccountId};
 use std::collections::HashMap;
 
@@ -122,7 +123,7 @@ impl Policy {
     }
 }
 
-fn compute_intent_hash(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: u64) -> String {
+fn intent_hash_for(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: u64) -> String {
     let data = format!(
         "{}|{}|{}|{}|{}",
         chain.to_lowercase(),
@@ -144,37 +145,37 @@ pub struct Watchdog {
     /// Trusted AI reviewer — runs off-chain (NEAR AI / TEE), attests here.
     reviewer: Option<AccountId>,
     ai_deny_threshold: u8,
-    /// intent_hash -> latestAI verdict.
-    verdicts: HashMap<String, AiVerdict>,
+    /// intent_hash -> latest AI verdict.
+    verdicts: IterableMap<String, AiVerdict>,
     policy: Policy,
-    whitelisted: HashMap<String, u64>,
-    guardian: HashMap<AccountId, bool>,
+    whitelisted: IterableMap<String, u64>,
+    guardian: IterableMap<AccountId, bool>,
     /// (chain, lowercased address) -> last seen nanosecond timestamp.
-    seen: HashMap<String, u64>,
-    holds: HashMap<u64, Hold>,
+    seen: IterableMap<String, u64>,
+    holds: IterableMap<u64, Hold>,
     next_hold_id: u64,
     /// (UTC day, chain) -> amount spent so far that day.
-    spent: HashMap<String, u128>,
+    spent: LookupMap<String, u128>,
     panic: bool,
     panic_started_at: u64,
     /// Incremented on every evaluate_tx so each verdict binds to one transfer.
     next_nonce: u64,
     /// Admin timelock: action -> proposed_at (ns). See propose_*/apply_*.
-    admin_pending: HashMap<String, u64>,
+    admin_pending: LookupMap<String, u64>,
     /// Action -> payload (string-encoded; see propose fns).
-    admin_payload: HashMap<String, String>,
+    admin_payload: LookupMap<String, String>,
     /// Delay before a timelocked admin change applies (default 1 day).
     pub admin_delay: u64,
     /// Pre-approved transfers: "chain|to|amount" -> true.
     /// Populated by release_hold (Cleared) and release_capsule; consumed by
     /// evaluate_tx (single use).
-    preapproved: HashMap<String, bool>,
+    preapproved: LookupMap<String, bool>,
     /// Inheritance heirs: NEAR accounts that may call claim_inheritance...
     heir_accounts: Vec<AccountId>,
     /// ...and their payout addresses (chain "eth") whitelisted while open.
     heir_addresses: Vec<String>,
     /// Guardian votes to open the inheritance (M-of-N, like holds).
-    heir_votes: HashMap<AccountId, bool>,
+    heir_votes: IterableMap<AccountId, bool>,
     // --- inheritance --------------------------------------------------
     /// Last time the operator checked in (ns). Genesis = init time.
     last_checkin: u64,
@@ -182,7 +183,7 @@ pub struct Watchdog {
     inheritance_timeout: u64,
     inheritance_open: bool,
     // --- payroll ------------------------------------------------------
-    employees: HashMap<String, Employee>,
+    employees: IterableMap<String, Employee>,
     payroll_runs: u64,
 }
 
@@ -201,7 +202,7 @@ impl Watchdog {
             operator,
             reviewer: None,
             ai_deny_threshold: AI_DENY_THRESHOLD,
-            verdicts: HashMap::new(),
+            verdicts: IterableMap::new(b"v"),
             policy: Policy {
                 daily_limits: {
                     let mut m = HashMap::new();
@@ -215,26 +216,26 @@ impl Watchdog {
                 panic_cooldown: PANIC_COOLDOWN_NANO,
                 verdict_ttl: 600_000_000_000, // 10 minutes
             },
-            whitelisted: HashMap::new(),
-            guardian: HashMap::new(),
-            seen: HashMap::new(),
-            holds: HashMap::new(),
+            whitelisted: IterableMap::new(b"w".as_slice()),
+            guardian: IterableMap::new(b"g".as_slice()),
+            seen: IterableMap::new(b"s".as_slice()),
+            holds: IterableMap::new(b"h"),
             next_hold_id: 1,
-            spent: HashMap::new(),
+            spent: LookupMap::new(b"d"),
             panic: false,
             panic_started_at: 0,
             next_nonce: 1,
-            admin_pending: HashMap::new(),
-            admin_payload: HashMap::new(),
+            admin_pending: LookupMap::new(b"ap".as_slice()),
+            admin_payload: LookupMap::new(b"aq".as_slice()),
             admin_delay: ONE_DAY_NANO,
-            preapproved: HashMap::new(),
+            preapproved: LookupMap::new(b"p"),
             heir_accounts: Vec::new(),
             heir_addresses: Vec::new(),
-            heir_votes: HashMap::new(),
+            heir_votes: IterableMap::new(b"hv".as_slice()),
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
             inheritance_open: false,
-            employees: HashMap::new(),
+            employees: IterableMap::new(b"e"),
             payroll_runs: 0,
         }
     }
@@ -280,7 +281,7 @@ impl Watchdog {
         }
 
         // --- rule: AI review gate (bound, single-use, expiring) -----------
-        let verdict_key = compute_intent_hash(&chain, &to_norm, amount.0, &memo_hash, nonce);
+        let verdict_key = intent_hash_for(&chain, &to_norm, amount.0, &memo_hash, nonce);
         if let Some(verdict) = self.verdicts.get(&verdict_key).cloned() {
             let expired = now.saturating_sub(verdict.reviewed_at) > self.policy.verdict_ttl;
             if expired {
@@ -662,8 +663,14 @@ impl Watchdog {
         let addr = address.to_lowercase();
         self.employees.remove(&addr);
         // F9: a removed employee must not keep skipping the quiet period.
-        self.whitelisted.retain(|k, _| !k.ends_with(&format!(":{}", addr)));
-        self.seen.retain(|k, _| !k.ends_with(&format!(":{}", addr)));
+        let wl: Vec<String> = self.whitelisted.keys().filter(|k| k.ends_with(&format!(":{}", addr))).map(|k| k.clone()).collect();
+        for key in wl {
+            self.whitelisted.remove(&key);
+        }
+        let sn: Vec<String> = self.seen.keys().filter(|k| k.ends_with(&format!(":{}", addr))).map(|k| k.clone()).collect();
+        for key in sn {
+            self.seen.remove(&key);
+        }
         Self::event("EMPLOYEE_REMOVED", "", &addr, 0);
     }
 
@@ -822,7 +829,7 @@ impl Watchdog {
         memo_hash: String,
         nonce: u64,
     ) -> String {
-        compute_intent_hash(&chain, &to, amount.0, &memo_hash, nonce)
+        intent_hash_for(&chain, &to, amount.0, &memo_hash, nonce)
     }
 
     pub fn get_ai_verdict(&self, intent_hash: String) -> Option<AiVerdict> {
@@ -885,7 +892,7 @@ impl Watchdog {
             return Decision::Deny;
         }
         let now = env::block_timestamp();
-        let verdict_key = compute_intent_hash(&chain, &to_norm, amount.0, &memo_hash, nonce);
+        let verdict_key = intent_hash_for(&chain, &to_norm, amount.0, &memo_hash, nonce);
         if let Some(verdict) = self.verdicts.get(&verdict_key) {
             let expired = now.saturating_sub(verdict.reviewed_at) > self.policy.verdict_ttl;
             if expired || verdict.denied || verdict.risk >= self.ai_deny_threshold {
