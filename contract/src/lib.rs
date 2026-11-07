@@ -191,6 +191,10 @@ pub struct Watchdog {
     heir_addresses: Vec<String>,
     /// Guardian votes to open the inheritance (M-of-N, like holds).
     heir_votes: IterableMap<AccountId, bool>,
+    /// Guardian votes to veto pending admin actions (N3: threshold needed).
+    veto_votes: LookupMap<String, u32>,
+    /// After panic_off, panic_on re-arms only after this (default 1 hour).
+    last_panic_off: u64,
     // --- inheritance --------------------------------------------------
     /// Last time the operator checked in (ns). Genesis = init time.
     last_checkin: u64,
@@ -247,6 +251,8 @@ impl Watchdog {
             heir_accounts: Vec::new(),
             heir_addresses: Vec::new(),
             heir_votes: IterableMap::new(b"hv".as_slice()),
+            veto_votes: LookupMap::new(b"vv".as_slice()),
+            last_panic_off: 0,
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
             inheritance_open: false,
@@ -482,9 +488,21 @@ impl Watchdog {
 
     pub fn guardian_veto(&mut self, action: String) {
         require!(self.guardian.contains_key(&env::predecessor_account_id()), "not a guardian");
-        self.admin_pending.remove(&action);
-        self.admin_payload.remove(&action);
-        Self::event("ADMIN_VETOED", "", &action, 0);
+        // A guardian cannot veto their own removal proposal (N3).
+        let own_removal = action.starts_with(&format!("guardian_remove:{}", env::predecessor_account_id()));
+        require!(!own_removal, "cannot veto own removal");
+        let vetoes = self.veto_votes.entry(action.clone()).or_insert(0);
+        *vetoes += 1;
+        let threshold = self.policy.guard_threshold;
+        if *vetoes >= threshold {
+            self.admin_pending.remove(&action);
+            self.admin_payload.remove(&action);
+            Self::event("ADMIN_VETOED", "", &action, *vetoes as u128);
+        }
+    }
+
+    pub fn get_veto_votes(&self, action: String) -> u32 {
+        self.veto_votes.get(&action).copied().unwrap_or(0)
     }
 
     // -- admin guardrails recap (F4) ------------------------------------
@@ -933,9 +951,13 @@ impl Watchdog {
         }
     }
 
-    /// Any guardian can panic-freeze all spending.
+    /// Any guardian can panic-freeze all spending. After a panic is
+    /// turned off, re-arming needs a 1-hour cooldown (N3).
     pub fn panic_on(&mut self) {
         require!(self.guardian.contains_key(&env::predecessor_account_id()), "not a guardian");
+        if self.last_panic_off > 0 {
+            require!(env::block_timestamp().saturating_sub(self.last_panic_off) >= 3_600_000_000_000, "re-panic cooldown");
+        }
         if !self.panic {
             self.panic = true;
             self.panic_started_at = env::block_timestamp();
@@ -952,6 +974,7 @@ impl Watchdog {
         let elapsed = env::block_timestamp().saturating_sub(self.panic_started_at);
         require!(elapsed >= self.policy.panic_cooldown, "cooldown still running");
         self.panic = false;
+        self.last_panic_off = env::block_timestamp();
         Self::event("PANIC_OFF", "", "", 0);
     }
 

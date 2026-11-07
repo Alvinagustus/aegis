@@ -635,8 +635,7 @@ fn f4_panic_cooldown_timelocked_and_minimum() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     guardian(&mut c, GUARD1.parse().unwrap());
-
-    // below minimum (5m): cannot even propose
+    guardian(&mut c, GUARD2.parse().unwrap());
     expect_panic(|| c.propose_panic_cooldown(0));
 
     // proposals cannot be applied before admin_delay (use production delay)
@@ -645,9 +644,11 @@ fn f4_panic_cooldown_timelocked_and_minimum() {
     expect_panic(|| c.apply_panic_cooldown());
     c.admin_delay = 0;
 
-    // guardian veto kills the change
-    guardian(&mut c, GUARD1.parse().unwrap());
+    // guardian veto kills the change (needs the threshold: GUARD1+GUARD2)
+    // GUARD2 guardian re-add keeps veto bookkeeping independent
     testing_env!(ctx.block_timestamp(3600_000_000_000).predecessor_account_id(GUARD1.parse().unwrap()).build());
+    c.guardian_veto("panic_cooldown".into());
+    testing_env!(ctx.block_timestamp(3600_000_000_000).predecessor_account_id(GUARD2.parse().unwrap()).build());
     c.guardian_veto("panic_cooldown".into());
     testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
     expect_panic(|| c.apply_panic_cooldown());
