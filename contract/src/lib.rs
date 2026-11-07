@@ -404,12 +404,11 @@ impl Watchdog {
         let (chain, to, amount) = (hold.chain.clone(), hold.to.clone(), hold.amount);
         hold.status = HoldStatus::Released;
         // The released hold becomes a single-use pre-approved entry (F6):
-        // evaluate_tx will approve exactly this (chain, to, amount) once.
+        // evaluate_tx will approve exactly this (chain, to, amount) once
+        // and record the spend there — NOT here (N4 double-count).
         self.preapproved.insert(format!("{}|{}|{}", chain.to_lowercase(), to, amount.0), true);
         let address_key = format!("{}:{}", chain.to_lowercase(), to);
         self.seen.insert(address_key, now);
-        let day = now / ONE_DAY_NANO;
-        self.record_spend(&format!("{}|{}", day, chain_bucket(&chain)), amount.0);
         Self::event_hold("HOLD_RELEASED", id, 0);
     }
 
@@ -827,8 +826,10 @@ impl Watchdog {
             // N1: payroll does NOT whitelist — employees first-seen still
             // goes through the quiet period like everyone else.
             self.seen.insert(format!("{}:{}", chain.to_lowercase(), emp.address), now);
+            // N4: do not record spend here; the per-employee evaluate_tx
+            // consumes the pre-approved entry and records it exactly once.
+            self.preapproved.insert(format!("{}|{}|{}", chain.to_lowercase(), emp.address, emp.salary.0), true);
         }
-        self.record_spend(&day_key, total);
         self.payroll_runs += 1;
         Self::event("PAYROLL_RUN", &chain, "", staff.len() as u128);
         staff.len() as u32
