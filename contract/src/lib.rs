@@ -321,7 +321,6 @@ impl Watchdog {
     // Owner controls
     // ------------------------------------------------------------------
 
-    #[payable]
     pub fn cancel_hold(&mut self, id: u64) {
         require!(env::predecessor_account_id() == self.operator, "only operator");
         let hold = self.hold_mut(id);

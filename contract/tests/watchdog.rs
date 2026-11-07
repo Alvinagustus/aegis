@@ -102,6 +102,11 @@ fn owner_can_cancel_pending_and_cleared_hold() {
     c.hold_escalate(1);
 
     as_operator(&mut ctx);
+    testing_env!(ctx
+        .predecessor_account_id(oper())
+        .signer_account_id(oper())
+        .attached_deposit(NearToken::from_yoctonear(0))
+        .build());
     c.cancel_hold(1);
     assert_eq!(c.get_hold(1).unwrap().status, HoldStatus::Cancelled);
 }
@@ -112,10 +117,7 @@ fn strays_cannot_cancel_hold() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "".into());
-    testing_env!(ctx
-        .predecessor_account_id(accounts(3))
-        .attached_deposit(NearToken::from_yoctonear(1))
-        .build());
+    testing_env!(ctx.predecessor_account_id(accounts(3)).build());
     expect_panic(|| c.cancel_hold(1));
 }
 

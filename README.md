@@ -88,7 +88,7 @@ mined in block 12067827, status `success`:
 
 ## Products
 
-- `contract/` — NEAR smart contract (Rust, `near-sdk 5`). A policy engine with the rules: daily limit, first-seen address → hold (quiet period), whitelist, panic mode (all spending frozen by the guardian, unfreeze only by owner after cooldown), guardian escalation M-of-N, cancel by the owner. **Also ships three usage patterns on the same engine:** time capsules (seal funds until a date + letter), digital inheritance (check-in clock, guardians open the estate after silence), and payroll (registered employees paid in batches under the same daily limit). 17 unit tests.
+- `contract/` — NEAR smart contract (Rust, `near-sdk 5`). A policy engine with the rules: daily limit, first-seen address → hold (quiet period), whitelist, panic mode (all spending frozen by the guardian, unfreeze only by owner after cooldown), guardian escalation M-of-N, cancel by the owner. **Also ships three usage patterns on the same engine:** time capsules (seal funds until a date + letter), digital inheritance (check-in clock, guardians open the estate after silence), and payroll (registered employees paid in batches under the same daily limit). 22 unit tests.
 - **AI reviewer agent** (`tools/reviewer/`) — a risk model running inside NEAR AI Cloud's TEE (Qwen3.8-27B) scores each intent and attests its verdict on-chain via `submit_verdict(risk 0–100, denied, model)`. Only the appointed reviewer account can do that, so the operator cannot forge a "safe" score for its own transfer. Verdicts are public and auditable. Rules: no verdict → deny; AI deny or risk ≥ 70 → deny even for whitelisted addresses; low risk → continue to the plain rules.
 - **Chain Signatures signer** (`tools/chainsig/`) — chainsig.js derives the operator's Ethereum address via the NEAR MPC network, prepares the tx, gets it MPC-signed, finalizes and broadcasts to Sepolia. Signing only happens after the Aegis contract approves.
 - `frontend/` — Vite dashboard: a **live read-only window** into the policy engine (policy, verdicts, holds, panic state, derived ETH address + Sepolia balance). Read-only by design: the operator key and NEAR AI API key never touch the browser; transfers are executed by the operator agent (`tools/chainsig/`).
@@ -228,7 +228,7 @@ Contract (Rust → WASM, deployable to NEAR testnet):
 ```sh
 cd contract
 cargo build --target wasm32-unknown-unknown --release   # WASM at target/wasm32-unknown-unknown/release/watchdog.wasm
-cargo test                                              # 17 unit tests
+cargo test                                              # 22 unit tests
 ```
 
 AI reviewer agent:
@@ -258,7 +258,7 @@ cd frontend && npm install && npm run dev    # or: npm run build
 ```
 
 The dashboard is interactive: connect any NEAR testnet wallet to
-- **deploy Aegis to a new contract account** (prebuilt `aegis.wasm` ships in
+- **deploy Aegis to a new contract account** (prebuilt `watchdog.wasm` ships in
   `frontend/public/`, so no Rust is needed), with yourself as operator,
 - submit `evaluate_tx`, whitelist, check-in, **run payroll**, and `panic_off`
   — all signed by your wallet.
