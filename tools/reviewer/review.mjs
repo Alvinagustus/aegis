@@ -69,33 +69,39 @@ async function askModel(intent) {
 
 async function askModelWithRetry(intent) {
   let lastErr;
-  for (let i = 1; i <= 3; i++) {
+  const attempts = 3;
+  for (let i = 1; i <= attempts; i++) {
     try {
       const r = await askModel(intent);
-      if (r.text && r.text.includes("{")) return r;
-      lastErr = new Error("empty/truncated response");
+      parseVerdict(r.text); // validate BEFORE using
+      return r;
     } catch (e) {
       lastErr = e;
+      console.error(`attempt ${i} failed: ${e.message}; retrying…`);
     }
-    console.error(`attempt ${i} failed: ${lastErr.message}; retrying…`);
   }
-  throw lastErr;
+  // Fail CLOSED after retries: worst-case verdict, never submit a pass.
+  console.error(`⚠️ model failed ${attempts} times — submitting fail-closed verdict (risk=100, denied=true)`);
+  return { model: process.env.REVIEW_MODEL || "Qwen/Qwen3.8-27B", text: '{"risk":100,"denied":true,"reason":"reviewer unavailable"}' };
 }
 
 function parseVerdict(text) {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      const v = JSON.parse(text.slice(start, end + 1));
-      return { risk: Math.min(100, Math.max(0, Number(v.risk) | 0)), denied: v.denied === true || v.denied === "true", reason: String(v.reason ?? "") };
-    } catch { /* fall through to regex repair */ }
+  if (start < 0 || end <= start) throw new Error(`no JSON in model response: ${text.slice(0, 200)}`);
+  let v;
+  try {
+    v = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    throw new Error(`unparseable model response: ${text.slice(0, 200)}`);
   }
-  // Repair truncated JSON: pull risk/denied out with regex.
-  const riskM = text.match(/"risk"\s*:\s*(\d+)/);
-  const deniedM = text.match(/"denied"\s*:\s*(true|false)/);
-  if (!riskM) throw new Error(`no JSON in model response: ${text.slice(0, 200)}`);
-  return { risk: Math.min(100, Math.max(0, parseInt(riskM[1], 10) | 0)), denied: deniedM?.[1] === "true", reason: "(reason truncated)" };
+  // Fail CLOSED: strict types only — no coercion. A malformed reply is an
+  // error (caller retries, then escalates to risk=100/denied=true).
+  if (!Number.isInteger(v.risk) || v.risk < 0 || v.risk > 100)
+    throw new Error(`risk out of range or non-integer: ${JSON.stringify(v.risk)}`);
+  if (typeof v.denied !== "boolean")
+    throw new Error(`denied must be boolean: ${JSON.stringify(v.denied)}`);
+  return { risk: v.risk, denied: v.denied, reason: String(v.reason ?? "") };
 }
 
 export function intentHash(intent) {

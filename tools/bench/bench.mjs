@@ -83,7 +83,10 @@ async function scoreIntent(intent) {
   const start = text.indexOf("{"), end = text.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error(`no JSON: ${text.slice(0, 120)}`);
   const v = JSON.parse(text.slice(start, end + 1));
-  return { risk: Math.min(100, Math.max(0, Number(v.risk) | 0)), denied: v.denied === true, model: data.model ?? "Qwen/Qwen3.8-27B" };
+  // Fail closed: strict types only, no coercion.
+  if (!Number.isInteger(v.risk) || v.risk < 0 || v.risk > 100) throw new Error(`risk out of range: ${JSON.stringify(v.risk)}`);
+  if (typeof v.denied !== "boolean") throw new Error(`denied must be boolean: ${JSON.stringify(v.denied)}`);
+  return { risk: v.risk, denied: v.denied, model: data.model ?? "Qwen/Qwen3.8-27B" };
 }
 
 loadEnv();
