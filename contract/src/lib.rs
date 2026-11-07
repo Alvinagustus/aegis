@@ -338,9 +338,9 @@ impl Watchdog {
         self.policy.daily_limit = limit;
     }
 
-    pub fn set_quiet_period(&mut self, seconds: u64) {
+    pub fn set_quiet_period_ns(&mut self, nanoseconds: u64) {
         self.only_operator();
-        self.policy.quiet_period = seconds;
+        self.policy.quiet_period = nanoseconds;
     }
 
     /// Owner-tunable panic cooldown (e.g. short for testing, 3 days by default).
