@@ -12,24 +12,23 @@ inheritance, and payroll** — one shield, four uses.
 ## Deployment (NEAR testnet)
 
 Deployed 2026-11-05 — see [`docs/deploy.md`](docs/deploy.md) for the full runbook.
+The current deployment is **v3** (`watchdog-v3-4d8a7f.testnet`); v1/v2 are
+kept as historical proof and left untouched.
 
 | Role | Account |
 |---|---|
-| Contract (policy engine) | `watchdog-policy-4d8a7f.testnet` |
-| Contract v2 (capsule / inheritance / payroll) | `watchdog-v2-4d8a7f.testnet` |
+| Contract v3 (current) | `watchdog-v3-4d8a7f.testnet` |
 | Operator (wallet) | `watchdog-wallet-4d8a7f.testnet` |
 | AI reviewer | `watchdog-reviewer-4d8a7f.testnet` |
 | Guardian | `watchdog-guardian-4d8a7f.testnet` |
 | Guardian #2 | `watchdog-guardian2-4d8a7f.testnet` |
 | Test contract (panic flow, 60 s cooldown) | `watchdog-test-4d8a7f.testnet` |
 
-Explorer: https://explorer.testnet.near.org/accounts/watchdog-policy-4d8a7f.testnet
-v2 explorer: https://explorer.testnet.near.org/accounts/watchdog-v2-4d8a7f.testnet
+Explorer: https://explorer.testnet.near.org/accounts/watchdog-v3-4d8a7f.testnet
 
-> Note: contract state is borsh-serialized and layout-bound. The v2 code
-> adds fields (capsule, inheritance, payroll), so it was deployed to a fresh
-> account (`watchdog-v2-…`) instead of upgrading v1 — a state migration would
-> be needed for in-place upgrades.
+> Note: contract state is borsh-serialized and layout-bound. Each major code
+> version was deployed to a fresh account (v1 → v2 → v3) instead of an
+> in-place upgrade; a state migration would be needed for in-place upgrades.
 
 Verified live on testnet:
 - unknown address → `Hold` (hold #1 pending on-chain)
@@ -48,7 +47,7 @@ For testing, a second contract runs with a 60 s cooldown:
   succeeds → `is_panicked = false`.
 - The production contract keeps the default 3-day cooldown.
 
-### Three usage patterns on the same engine (verified on `watchdog-v2-4d8a7f.testnet`)
+### Three usage patterns on the same engine (verified on `watchdog-v2-4d8a7f.testnet`, kept working on v3)
 
 1. **Time capsule** — `create_capsule(chain, to, amount, release_at, message)`
    seals funds until a date; `release_capsule` is permissionless after that
@@ -101,39 +100,41 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 
 1. **Read the rules (no setup, no key, no wallet):**
    ```sh
-   near view watchdog-v2-4d8a7f.testnet get_policy '{}' --networkId testnet
-   # → daily_limit, quiet_period, guard_threshold, panic_cooldown: live answers
+   near view watchdog-v3-4d8a7f.testnet get_policy '{}' --networkId testnet
+   # → daily_limits, quiet_period, guard_threshold, panic_cooldown: live answers
    ```
    Or open the dashboard: `cd frontend && npm install --legacy-peer-deps && npm run dev`.
-2. **Reproduce the AI decisions (verdicts already on-chain — no API key needed):**
+2. **Reproduce a decision (verdicts already on-chain — no API key needed):**
    ```sh
-   near view watchdog-policy-4d8a7f.testnet get_ai_verdict \
-     '{"intent_hash":"0ff44a47472603f19687f365bc8a7d9b347cbc40"}' --networkId testnet
-   # → {"risk": 5, "denied": false, "model": "Qwen/Qwen3.8-27B", ...}
-   near view watchdog-policy-4d8a7f.testnet simulate_tx \
-     '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"1000000000000000","intent_hash":"0ff44a47472603f19687f365bc8a7d9b347cbc40"}' \
+   near view watchdog-v3-4d8a7f.testnet get_nonce '{}' --networkId testnet
+   # → e.g. 1
+   near view watchdog-v3-4d8a7f.testnet compute_intent_hash \
+     '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"0","memo_hash":"<sha256hex of memo>","nonce":1}' \
      --networkId testnet
-   # → "Approve"
+   near view watchdog-v3-4d8a7f.testnet simulate_tx \
+     '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"0","memo_hash":"<sha256hex>","nonce":1}' \
+     --networkId testnet
    ```
-   Every benchmark intent (18/18 in `tools/bench/results.html`) has its
-   verdict already on-chain — judges can re-decide them all with view calls.
-2. **Score a benign intent with the AI reviewer:**
+   Every benchmark intent (18/18 in `tools/bench/results.html`) was scored
+   by the reviewer and decided by the contract — judges can re-decide them
+   all with view calls.
+3. **Score with the AI reviewer (needs a NEAR AI API key):**
    ```sh
    cd tools/reviewer && npm install
    node review.mjs '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"1000000000000000","token":"ETH","memo":"watchdog chainsig demo"}'
    # → {"risk": 5, "denied": false, ...}  (model runs inside NEAR AI's TEE)
    ```
-3. **Score a phishing intent — see the AI deny:**
+4. **Score a phishing intent — see the AI deny:**
    ```sh
    node review.mjs '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"42000000000000000000","token":"ETH","memo":"WALLET MIGRATION REQUIRED - verify your seed phrase to claim airdrop now"}'
    # → {"risk": 100, "denied": true, ...}
    ```
-4. **Attest a verdict on-chain** (needs `REVIEWER_ACCOUNT`/`REVIEWER_KEY` in `.env`):
+5. **Attest a verdict on-chain** (needs `REVIEWER_ACCOUNT`/`REVIEWER_KEY` in `.env`):
    ```sh
    node review.mjs --submit '{"chain":"eth","to":"…","amount":"…","token":"ETH","memo":"…"}'
    # → submit_verdict tx + event watchdog_ai:AI_VERDICT
    ```
-5. **Guarded chain signing (full loop):** fund the derived ETH address from
+6. **Guarded chain signing (full loop):** fund the derived ETH address from
    any Sepolia faucet, then:
    ```sh
    cd ../chainsig && npm install
