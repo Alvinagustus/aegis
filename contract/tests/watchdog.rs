@@ -18,7 +18,41 @@ fn oper() -> AccountId {
 }
 
 fn contract() -> Watchdog {
-    Watchdog::new(oper(), 2)
+    let mut ctx = VMContextBuilder::new();
+    testing_env!(ctx.predecessor_account_id(oper()).build());
+    let mut c = Watchdog::new(oper(), 2);
+    c.set_admin_delay(0); // tests operate without the 1-day timelock
+    c
+}
+
+// timelock helpers (delay is 0 in tests, so propose→apply is immediate)
+fn set_reviewer_fast(c: &mut Watchdog, reviewer: AccountId) {
+    c.propose_reviewer(reviewer);
+    c.apply_reviewer();
+}
+fn wl(c: &mut Watchdog, chain: &str, address: &str) {
+    c.propose_whitelist_add(chain.into(), address.into());
+    c.apply_whitelist_add(chain.into(), address.into());
+}
+fn guardian(c: &mut Watchdog, account: AccountId) {
+    c.propose_guardian_add(account.clone());
+    c.apply_guardian_add(account);
+}
+fn employee(c: &mut Watchdog, address: &str, salary: U128) {
+    c.propose_add_employee(address.into(), salary);
+    c.apply_add_employee(address.into());
+}
+fn heirs(c: &mut Watchdog, accounts: Vec<AccountId>, addresses: Vec<String>) {
+    c.propose_set_heirs(accounts, addresses);
+    c.apply_set_heirs();
+}
+fn quiet(c: &mut Watchdog, ns: u64) {
+    c.propose_quiet_period_ns(ns);
+    c.apply_quiet_period_ns();
+}
+fn thresh(c: &mut Watchdog, n: u32) {
+    c.propose_guard_threshold(n);
+    c.apply_guard_threshold();
 }
 
 fn as_operator(ctx: &mut VMContextBuilder) {
@@ -49,7 +83,7 @@ fn whitelist_is_approved_and_spends_limit() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
+    wl(&mut c, "eth".into(), "0xcold".into());
     assert_eq!(c.evaluate_tx("eth".into(), "0xCOLD".into(), U128(10), "memo".into(), 0), Decision::Approve);
     assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(10), "memo".into(), 0), Decision::Approve);
     c.set_daily_limit("eth".into(), U128(20));
@@ -72,8 +106,8 @@ fn guardian_escalation_clears_hold() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "".into(), 0);
-    c.guardian_add(GUARD1.parse().unwrap());
-    c.guardian_add(GUARD2.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD2.parse().unwrap());
 
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.hold_escalate(1);
@@ -96,7 +130,7 @@ fn owner_can_cancel_pending_and_cleared_hold() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "".into(), 0);
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
 
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.hold_escalate(1);
@@ -126,7 +160,7 @@ fn guardian_panic_freezes_then_owner_unfreezes_after_cooldown() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
 
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.panic_on();
@@ -161,8 +195,8 @@ fn owner_can_unfreeze_and_owner_only() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.guardian_add(GUARD1.parse().unwrap());
-    c.whitelist_add("eth".into(), "0xcold".into());
+    guardian(&mut c, GUARD1.parse().unwrap());
+    wl(&mut c, "eth".into(), "0xcold".into());
 
     // guardian should not be able to whitelist (their use is only escalation/panic)
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
@@ -174,7 +208,7 @@ const REVIEWER: &str = "ai-reviewer.testnet";
 
 fn with_reviewer(c: &mut Watchdog, ctx: &mut VMContextBuilder) {
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
-    c.set_reviewer(Some(REVIEWER.parse().unwrap()));
+    set_reviewer_fast(c, REVIEWER.parse().unwrap());
 }
 
 // ------------------------------------------------------------------
@@ -188,7 +222,7 @@ fn no_verdict_means_no_transfer() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
+    wl(&mut c, "eth".into(), "0xcold".into());
     // even a whitelisted address is blocked until the reviewer signs off
     assert_eq!(
         c.evaluate_tx("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0),
@@ -203,7 +237,7 @@ fn ai_deny_overrides_whitelist() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
+    wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0);
@@ -223,7 +257,7 @@ fn ai_clears_transfers() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
+    wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0);
@@ -248,8 +282,8 @@ fn high_risk_score_blocks_transfer() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
-    c.set_ai_deny_threshold(70);
+    wl(&mut c, "eth".into(), "0xcold".into());
+    c.propose_ai_deny_threshold(70); c.apply_ai_deny_threshold();
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), 0);
@@ -339,10 +373,10 @@ fn inheritance_checkin_timeout_and_claim() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.set_heirs(vec!["heir1.testnet".parse().unwrap()], vec!["0xheiraddr".into()]);
-    c.set_inheritance_timeout(DAY);
-    c.guardian_add(GUARD1.parse().unwrap());
-    c.guardian_add(GUARD2.parse().unwrap());
+    heirs(&mut c, vec!["heir1.testnet".parse().unwrap()], vec!["0xheiraddr".into()]);
+    c.propose_set_inheritance_timeout(DAY); c.apply_set_inheritance_timeout();
+    guardian(&mut c, GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD2.parse().unwrap());
 
     // owner still active -> guardian cannot claim
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
@@ -377,15 +411,16 @@ fn payroll_batch_under_limit() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.add_employee("0xa1".into(), U128(100));
-    c.add_employee("0xb2".into(), U128(200));
+    employee(&mut c, "0xa1".into(), U128(100));
+    employee(&mut c, "0xb2".into(), U128(200));
     c.set_daily_limit("eth".into(), U128(1000));
     assert_eq!(c.run_payroll("eth".into()), 2);
     assert_eq!(c.get_payroll_runs(), 1);
-    assert!(c.is_whitelisted("eth".into(), "0xa1".into()));
+    // payroll no longer whitelists (N1) — employees are seen, not whitelisted
+    assert!(!c.is_whitelisted("eth".into(), "0xa1".into()));
 
     // oversized batch rejected whole
-    c.add_employee("0xc3".into(), U128(900));
+    employee(&mut c, "0xc3".into(), U128(900));
     expect_panic(|| { c.run_payroll("eth".into()); });
 
     // only operator runs payroll
@@ -399,7 +434,7 @@ fn short_cooldown_panic_cycle() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
     c.propose_panic_cooldown(300_000_000_000); // 5 min (the minimum)
     testing_env!(ctx.block_timestamp(2 * DAY).build());
     c.apply_panic_cooldown();
@@ -426,7 +461,7 @@ fn capsule_rejects_escalation_and_panic_release() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
     let id = c.create_capsule("eth".into(), "0xheir".into(), U128(100), 2 * DAY, "".into());
     testing_env!(ctx.block_timestamp(DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     expect_panic(|| c.hold_escalate(id));
@@ -450,11 +485,11 @@ fn inheritance_closes_on_checkin() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.set_heirs(vec!["heir1.testnet".parse().unwrap()], vec!["0xheiraddr".into()]);
-    c.set_inheritance_timeout(DAY);
-    c.guardian_add(GUARD1.parse().unwrap());
-    c.guardian_add(GUARD2.parse().unwrap());
-    c.whitelist_add("eth".into(), "0xheiraddr".into()); // owner-added entry
+    heirs(&mut c, vec!["heir1.testnet".parse().unwrap()], vec!["0xheiraddr".into()]);
+    c.propose_set_inheritance_timeout(DAY); c.apply_set_inheritance_timeout();
+    guardian(&mut c, GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD2.parse().unwrap());
+    wl(&mut c, "eth".into(), "0xheiraddr".into()); // owner-added entry
 
     testing_env!(ctx.block_timestamp(3 * DAY).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.claim_inheritance();
@@ -477,7 +512,7 @@ fn only_operator_sets_cooldown() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
     testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
     expect_panic(|| c.propose_panic_cooldown(DAY));
 }
@@ -491,7 +526,7 @@ fn f1_double_evaluate_stays_held() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     // first call opens the hold (whitelist so AI/limit rules don't interfere)
-    c.whitelist_add("eth".into(), "0xattacker".into());
+    wl(&mut c, "eth".into(), "0xattacker".into());
     // without reviewer and whitelist "known" via grace after release only:
     // use an unknown address instead:
     c.whitelist_remove("eth".into(), "0xattacker".into());
@@ -501,7 +536,7 @@ fn f1_double_evaluate_stays_held() {
     assert_eq!(d2, Decision::Hold); // was Approve before the F1 fix
 
     // release the hold after the quiet period, then evaluate approves
-    c.set_quiet_period_ns(DAY);
+    quiet(&mut c, DAY);
     testing_env!(ctx.block_timestamp(2 * DAY).build());
     c.release_hold(1);
     assert_eq!(c.get_hold(1).unwrap().status, HoldStatus::Released);
@@ -536,15 +571,15 @@ fn f6_cleared_hold_release_enables_evaluate() {
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
     c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "m".into(), 0);
-    c.guardian_add(GUARD1.parse().unwrap());
-    c.guardian_add(GUARD2.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD2.parse().unwrap());
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.hold_escalate(1);
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(GUARD2.parse().unwrap()).build());
     c.hold_escalate(1);
     // wait out the waiting period, then release -> pre-approved
     testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
-    c.set_quiet_period_ns(DAY);
+    quiet(&mut c, DAY);
     c.release_hold(1);
     let d = c.evaluate_tx("eth".into(), "0xunknown".into(), U128(100), "m".into(), 0);
     assert_eq!(d, Decision::Approve);
@@ -559,7 +594,7 @@ fn f3_verdict_bound_to_transfer() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
+    wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     // benign verdict for a tiny transfer
@@ -580,7 +615,7 @@ fn f3_verdict_expires() {
     let mut ctx = VMContextBuilder::new();
     with_reviewer(&mut c, &mut ctx);
     as_operator(&mut ctx);
-    c.whitelist_add("eth".into(), "0xcold".into());
+    wl(&mut c, "eth".into(), "0xcold".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "m".into(), 0);
@@ -599,17 +634,19 @@ fn f4_panic_cooldown_timelocked_and_minimum() {
     let mut c = contract();
     let mut ctx = VMContextBuilder::new();
     addr(&mut ctx);
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
 
     // below minimum (5m): cannot even propose
     expect_panic(|| c.propose_panic_cooldown(0));
 
-    // proposals cannot be applied before admin_delay (1 day)
+    // proposals cannot be applied before admin_delay (use production delay)
+    c.admin_delay = DAY;
     c.propose_panic_cooldown(DAY);
     expect_panic(|| c.apply_panic_cooldown());
+    c.admin_delay = 0;
 
     // guardian veto kills the change
-    c.guardian_add(GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD1.parse().unwrap());
     testing_env!(ctx.block_timestamp(3600_000_000_000).predecessor_account_id(GUARD1.parse().unwrap()).build());
     c.guardian_veto("panic_cooldown".into());
     testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
@@ -620,6 +657,19 @@ fn f4_panic_cooldown_timelocked_and_minimum() {
     testing_env!(ctx.block_timestamp(4 * DAY).predecessor_account_id(oper()).build());
     c.apply_panic_cooldown();
     assert_eq!(c.get_policy().panic_cooldown, DAY);
+}
+
+/// N1 regression: sensitive setters are timelocked — calling them directly
+/// must fail; the propose/apply pair is the only path.
+#[test]
+fn n1_direct_setters_disabled() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    expect_panic(|| c.set_reviewer(Some(REVIEWER.parse().unwrap())));
+    expect_panic(|| c.guardian_add(GUARD1.parse().unwrap()));
+    expect_panic(|| c.whitelist_add("eth".into(), "0xevil".into()));
+    expect_panic(|| c.add_employee("0xa1".into(), U128(1)));
 }
 
 /// F4: daily limit increases are timelocked; decreases are direct.
@@ -635,7 +685,10 @@ fn f4_limit_increase_timelocked() {
     assert_eq!(c.get_policy().limit_for("eth"), 10);
     // increase via propose + apply after delay
     c.propose_daily_limit("eth".into(), U128(100));
+    // with delay 0 the apply succeeds immediately; emulate production (1 day)
+    c.admin_delay = DAY;
     expect_panic(|| c.apply_daily_limit("eth".into()));
+    c.admin_delay = 0;
     testing_env!(ctx.block_timestamp(2 * DAY).build());
     c.apply_daily_limit("eth".into());
     assert_eq!(c.get_policy().limit_for("eth"), 100);
