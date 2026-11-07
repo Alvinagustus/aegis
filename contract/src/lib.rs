@@ -123,6 +123,21 @@ impl Policy {
     }
 }
 
+const EVM_CHAINS: &[&str] = &[
+    "eth", "ethereum", "base", "arb", "arbitrum", "op", "optimism", "polygon", "matic", "bsc", "bnb", "avax", "zksync",
+];
+
+/// Bucket a chain label into a shared spend counter. All EVM labels share
+/// ONE counter (N2): you cannot multiply the daily limit by relabeling.
+fn chain_bucket(chain: &str) -> String {
+    let c = chain.to_lowercase();
+    if EVM_CHAINS.contains(&c.as_str()) {
+        "evm".to_string()
+    } else {
+        c
+    }
+}
+
 fn intent_hash_for(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: u64) -> String {
     let data = format!(
         "{}|{}|{}|{}|{}",
@@ -273,7 +288,7 @@ impl Watchdog {
 
         // --- rule: daily limit -------------------------------------------
         let day = now / ONE_DAY_NANO;
-        let day_key = format!("{}|{}", day, chain.to_lowercase());
+        let day_key = format!("{}|{}", day, chain_bucket(&chain));
         let used = *self.spent.get(&day_key).unwrap_or(&0);
         if used.saturating_add(amount.0) > self.policy.limit_for(&chain) {
             Self::event("DENY_DAILY_LIMIT", &chain, &to_norm, amount.0);
@@ -388,7 +403,7 @@ impl Watchdog {
         let address_key = format!("{}:{}", chain.to_lowercase(), to);
         self.seen.insert(address_key, now);
         let day = now / ONE_DAY_NANO;
-        self.record_spend(&format!("{}|{}", day, chain.to_lowercase()), amount.0);
+        self.record_spend(&format!("{}|{}", day, chain_bucket(&chain)), amount.0);
         Self::event_hold("HOLD_RELEASED", id, 0);
     }
 
@@ -782,7 +797,7 @@ impl Watchdog {
         self.only_operator();
         require!(!self.panic, "panic mode");
         let day = env::block_timestamp() / ONE_DAY_NANO;
-        let day_key = format!("{}|{}", day, chain.to_lowercase());
+        let day_key = format!("{}|{}", day, chain_bucket(&chain));
         let used = *self.spent.get(&day_key).unwrap_or(&0);
 
         let staff: Vec<Employee> = self.employees.values().cloned().collect();
@@ -1027,7 +1042,7 @@ impl Watchdog {
             return Decision::Deny;
         }
         let day = env::block_timestamp() / ONE_DAY_NANO;
-        let day_key = format!("{}|{}", day, chain.to_lowercase());
+        let day_key = format!("{}|{}", day, chain_bucket(&chain));
         let used = *self.spent.get(&day_key).unwrap_or(&0);
         if used.saturating_add(amount.0) > self.policy.limit_for(&chain) {
             return Decision::Deny;

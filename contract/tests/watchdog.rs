@@ -672,7 +672,25 @@ fn n1_direct_setters_disabled() {
     expect_panic(|| c.add_employee("0xa1".into(), U128(1)));
 }
 
-/// F4: daily limit increases are timelocked; decreases are direct.
+/// N2 regression: relabeling a chain cannot multiply the daily limit —
+/// all EVM labels share one counter.
+#[test]
+fn n2_evm_labels_share_one_counter() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    c.set_daily_limit("eth".into(), U128(100));
+    wl(&mut c, "eth".into(), "0xcold".into());
+    // spend all 100 on "eth" (whitelisted, no reviewer → approve)
+    assert_eq!(c.evaluate_tx("eth".into(), "0xcold".into(), U128(100), "".into(), 0), Decision::Approve);
+    // same day, different EVM label → shared counter exhausted → Deny
+    let d = c.evaluate_tx("base".into(), "0xcold".into(), U128(1), "".into(), 1);
+    assert_eq!(d, Decision::Deny);
+    // BTC has its own counter (1M sats default) → not denied
+    wl(&mut c, "btc".into(), "btcaddr".into());
+    let d2 = c.evaluate_tx("btc".into(), "btcaddr".into(), U128(1), "".into(), 1);
+    assert_eq!(d2, Decision::Approve);
+}
 #[test]
 fn f4_limit_increase_timelocked() {
     let mut c = contract();
