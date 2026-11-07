@@ -17,3 +17,6 @@ dist/
 
 # local-only demo assets (motion film + script)
 /demo.html
+
+# local working docs
+/CHANGELOG.md
