@@ -46,7 +46,13 @@ const account = await near.account(OPERATOR);
 // --- 1. intent hash (must match the reviewer's) --------------------
 const memo = "watchdog chainsig demo";
 const amountWei = parseEther(AMOUNT_ETH).toString();
-const ih = intentHash("eth", TO, amountWei, memo);
+// Contract computes the key from (chain, to, amount, memo_hash, nonce) — we
+// must use the same memo_hash (sha256 of memo) and current contract nonce.
+const memoHash = crypto.createHash("sha256").update(memo).digest("hex");
+const nonce = Number(
+  await account.viewFunction({ contractId: CONTRACT, methodName: "get_nonce", args: {} }),
+).catch(() => 0);
+const ih = crypto.createHash("sha256").update(`eth|${TO.toLowerCase()}|${amountWei}|${memoHash}|${nonce}`).digest("hex").slice(0, 40);
 console.log("intent_hash:", ih);
 console.log("Review command (run first if no verdict on-chain):");
 console.log(`  node ../reviewer/review.mjs --submit '{"chain":"eth","to":"${TO}","amount":"${amountWei}","token":"ETH","memo":"${memo}"}'`);
@@ -55,7 +61,7 @@ console.log(`  node ../reviewer/review.mjs --submit '{"chain":"eth","to":"${TO}"
 const evaluated = await account.functionCall({
   contractId: CONTRACT,
   methodName: "evaluate_tx",
-  args: { chain: "eth", to: TO, amount: amountWei, intent_hash: ih },
+  args: { chain: "eth", to: TO, amount: amountWei, memo_hash: memoHash, nonce },
   gas: 50_000_000_000_000n,
 });
 const decision = evaluated?.result ?? evaluated;

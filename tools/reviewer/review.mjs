@@ -104,14 +104,17 @@ function parseVerdict(text) {
   return { risk: v.risk, denied: v.denied, reason: String(v.reason ?? "") };
 }
 
-export function intentHash(intent) {
+export function intentHash(intent, nonce) {
+  // Must match the contract's compute_intent_hash:
+  // sha256("chain|to_lower|amount|memo_hash|nonce") with memo_hash = sha256(memo)
+  const memoHash = crypto.createHash("sha256").update(intent.memo || "").digest("hex");
   return (
     intent.intent_hash ||
-    crypto.createHash("sha256").update(`${intent.chain}|${intent.to.toLowerCase()}|${intent.amount}|${intent.memo || ""}`).digest("hex").slice(0, 40)
+    crypto.createHash("sha256").update(`${intent.chain}|${intent.to.toLowerCase()}|${intent.amount}|${memoHash}|${nonce ?? 0}`).digest("hex").slice(0, 40)
   );
 }
 
-async function submitOnChain({ intentHash, risk, denied }) {
+async function submitOnChain({ intentHash, risk, denied, model }) {
   for (const k of ["WATCHDOG_CONTRACT", "REVIEWER_ACCOUNT", "REVIEWER_KEY"]) {
     if (!process.env[k] || k === "WATCHDOG_CONTRACT" && !CONTRACT_ID_RE.test(process.env[k])) throw new Error(`${k} missing/invalid`);
   }
@@ -127,7 +130,7 @@ async function submitOnChain({ intentHash, risk, denied }) {
   const result = await account.functionCall({
     contractId: process.env.WATCHDOG_CONTRACT,
     methodName: "submit_verdict",
-    args: { intent_hash: intentHash, risk, denied, model: process.env.REVIEW_MODEL || "Qwen/Qwen3.8-27B" },
+    args: { intent_hash: intentHash, risk, denied, model },
     gas: 50_000_000_000_000n,
   });
   return result?.transaction?.hash ?? "ok";
@@ -140,9 +143,23 @@ const intent = JSON.parse(intentArg);
 loadEnv();
 const { model, text } = await askModelWithRetry(intent);
 const verdict = parseVerdict(text);
-const ih = intentHash(intent);
+
+// The verdict key depends on the contract nonce (F3): fetch it from chain.
+let nonce = 0;
+if (process.env.WATCHDOG_CONTRACT && process.env.REVIEWER_ACCOUNT && process.env.REVIEWER_KEY) {
+  try {
+    const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
+    await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
+    const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://test.rpc.fastnear.com" });
+    nonce = Number(await near.account(process.env.REVIEWER_ACCOUNT).viewFunction({ contractId: process.env.WATCHDOG_CONTRACT, methodName: "get_nonce", args: {} }));
+  } catch (e) {
+    console.error("could not read get_nonce (using 0):", e.message);
+  }
+}
+const ih = intentHash(intent, nonce);
 const out = {
   intent_hash: ih,
+  nonce,
   chain: intent.chain,
   to: intent.to,
   amount: intent.amount,
@@ -154,6 +171,6 @@ const out = {
 console.log(JSON.stringify(out, null, 2));
 
 if (doSubmit) {
-  const txHash = await submitOnChain({ intentHash: ih, risk: verdict.risk, denied: verdict.denied });
+  const txHash = await submitOnChain({ intentHash: ih, risk: verdict.risk, denied: verdict.denied, model });
   console.log(JSON.stringify({ on_chain: "submit_verdict", tx: txHash }, null, 2));
 }

@@ -58,8 +58,9 @@ function keychainKey(accountId) {
   return JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")).private_key;
 }
 
-const intentHash = (chain, to, amount, memo) =>
-  crypto.createHash("sha256").update(`${chain}|${to.toLowerCase()}|${amount}|${memo}`).digest("hex").slice(0, 40);
+const memoHashOf = (memo) => crypto.createHash("sha256").update(memo || "").digest("hex");
+const intentHash = (chain, to, amount, memo, nonce) =>
+  crypto.createHash("sha256").update(`${chain}|${to.toLowerCase()}|${amount}|${memoHashOf(memo)}|${nonce}`).digest("hex").slice(0, 40);
 
 async function scoreIntent(intent) {
   const key = process.env.NEAR_AI_API_KEY;
@@ -105,7 +106,8 @@ const view = async (contractId, method, args) =>
 
 const results = [];
 for (const s of SCENARIOS) {
-  const ih = intentHash("eth", s.to, s.amount, s.memo);
+  const nonce = s.nonce ?? Number(await view(CONTRACT, "get_nonce", {}));
+  const ih = intentHash("eth", s.to, s.amount, s.memo, nonce);
   let verdict = null;
   if (s.submitVerdict === false) {
     // A08: no verdict on purpose — but a previous bench run may have left one;
@@ -135,7 +137,7 @@ for (const s of SCENARIOS) {
     verdict = await view(CONTRACT, "get_ai_verdict", { intent_hash: ih });
   }
   if (s.submitVerdict === false) verdict = await view(CONTRACT, "get_ai_verdict", { intent_hash: ih }).catch(() => null);
-  const decision = await view(CONTRACT, "simulate_tx", { chain: "eth", to: s.to, amount: s.amount, intent_hash: ih });
+  const decision = await view(CONTRACT, "simulate_tx", { chain: "eth", to: s.to, amount: s.amount, memo_hash: memoHashOf(s.memo), nonce });
   const pass = s.expected === "not_approve" ? decision !== "Approve" : decision === s.expected;
   results.push({ id: s.id, name: s.name, kind: s.kind, expected: s.expected, risk: verdict?.risk ?? null, denied: verdict?.denied ?? null, decision, pass });
   console.log(`${pass ? "✅" : "❌"} ${s.id} ${s.name} — risk=${verdict?.risk ?? "n/a"} decision=${decision} (expected ${s.expected})`);

@@ -102,6 +102,8 @@ pub struct Policy {
     /// Mandatory cooldown before panic mode can be turned off.
     /// Default 3 days; the operator may lower it — every change is on-chain.
     pub panic_cooldown: u64,
+    /// AI verdicts expire this long after `reviewed_at` (ns). Default 10 min.
+    pub verdict_ttl: u64,
 }
 
 /// Default AI gate: score >= this, or an explicit `denied`, blocks the tx.
@@ -118,6 +120,21 @@ impl Policy {
             .or_else(|| self.daily_limits.get("eth").map(|l| l.0))
             .unwrap_or(0)
     }
+}
+
+fn compute_intent_hash(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: u64) -> String {
+    let data = format!(
+        "{}|{}|{}|{}|{}",
+        chain.to_lowercase(),
+        to.to_lowercase(),
+        amount,
+        memo_hash,
+        nonce
+    );
+    env::sha256(data.as_bytes())
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 #[near(contract_state)]
@@ -140,6 +157,8 @@ pub struct Watchdog {
     spent: HashMap<String, u128>,
     panic: bool,
     panic_started_at: u64,
+    /// Incremented on every evaluate_tx so each verdict binds to one transfer.
+    next_nonce: u64,
     // --- inheritance --------------------------------------------------
     /// Last time the operator checked in (ns). Genesis = init time.
     last_checkin: u64,
@@ -179,6 +198,7 @@ impl Watchdog {
                 guard_threshold,
                 known_grace: 30 * ONE_DAY_NANO,
                 panic_cooldown: PANIC_COOLDOWN_NANO,
+                verdict_ttl: 600_000_000_000, // 10 minutes
             },
             whitelisted: HashMap::new(),
             guardian: HashMap::new(),
@@ -188,6 +208,7 @@ impl Watchdog {
             spent: HashMap::new(),
             panic: false,
             panic_started_at: 0,
+            next_nonce: 1,
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
             heirs: Vec::new(),
@@ -205,14 +226,17 @@ impl Watchdog {
     /// call this, so decisions can't be forged; denial/approval is signed off
     /// by the contract via events.
     ///
-    /// `intent_hash` links this transfer to an AI verdict (`submit_verdict`).
-    /// While a reviewer is configured, unknown intents are held pending review.
+    /// The verdict key is computed on-chain from
+    /// (chain, to, amount, memo_hash, nonce) — callers cannot invent it.
+    /// `memo_hash` is the hex sha256 of the memo text (off-chain), `nonce`
+    /// must equal `get_nonce()` at evaluation time.
     pub fn evaluate_tx(
         &mut self,
         chain: String,
         to: String,
         amount: U128,
-        intent_hash: String,
+        memo_hash: String,
+        nonce: u64,
     ) -> Decision {
         require!(env::predecessor_account_id() == self.operator, "only operator");
         let to_norm = to.to_lowercase();
@@ -234,10 +258,15 @@ impl Watchdog {
             return Decision::Deny;
         }
 
-        // --- rule: AI review gate -----------------------------------------
-        // AI denies override everything (even whitelisted addresses), and a
-        // configured reviewer with no verdict on record means "not reviewed yet".
-        if let Some(verdict) = self.verdicts.get(&intent_hash) {
+        // --- rule: AI review gate (bound, single-use, expiring) -----------
+        let verdict_key = compute_intent_hash(&chain, &to_norm, amount.0, &memo_hash, nonce);
+        if let Some(verdict) = self.verdicts.get(&verdict_key).cloned() {
+            let expired = now.saturating_sub(verdict.reviewed_at) > self.policy.verdict_ttl;
+            if expired {
+                self.verdicts.remove(&verdict_key);
+                Self::event_ai(&chain, &to_norm, verdict.risk, "DENY_VERDICT_EXPIRED");
+                return Decision::Deny;
+            }
             if verdict.denied || verdict.risk >= self.ai_deny_threshold {
                 Self::event_ai(&chain, &to_norm, verdict.risk, "DENY_AI");
                 return Decision::Deny;
@@ -265,6 +294,8 @@ impl Watchdog {
         if known {
             self.seen.insert(address_key.clone(), now);
             self.record_spend(&day_key, amount.0);
+            self.verdicts.remove(&verdict_key); // single-use: consumed on approve
+            self.next_nonce += 1;
             Self::event("APPROVE", &chain, &to_norm, amount.0);
             return Decision::Approve;
         }
@@ -643,6 +674,23 @@ impl Watchdog {
         self.reviewer.clone()
     }
 
+    pub fn get_nonce(&self) -> u64 {
+        self.next_nonce
+    }
+
+    /// The exact key evaluate_tx will look a verdict up under (agents use
+    /// this; keeping the formula in the contract prevents drift).
+    pub fn compute_intent_hash(
+        &self,
+        chain: String,
+        to: String,
+        amount: U128,
+        memo_hash: String,
+        nonce: u64,
+    ) -> String {
+        compute_intent_hash(&chain, &to, amount.0, &memo_hash, nonce)
+    }
+
     pub fn get_ai_verdict(&self, intent_hash: String) -> Option<AiVerdict> {
         self.verdicts.get(&intent_hash).cloned()
     }
@@ -689,7 +737,8 @@ impl Watchdog {
         chain: String,
         to: String,
         amount: U128,
-        intent_hash: String,
+        memo_hash: String,
+        nonce: u64,
     ) -> Decision {
         let to_norm = to.to_lowercase();
         if self.panic {
@@ -701,8 +750,11 @@ impl Watchdog {
         if used.saturating_add(amount.0) > self.policy.limit_for(&chain) {
             return Decision::Deny;
         }
-        if let Some(verdict) = self.verdicts.get(&intent_hash) {
-            if verdict.denied || verdict.risk >= self.ai_deny_threshold {
+        let now = env::block_timestamp();
+        let verdict_key = compute_intent_hash(&chain, &to_norm, amount.0, &memo_hash, nonce);
+        if let Some(verdict) = self.verdicts.get(&verdict_key) {
+            let expired = now.saturating_sub(verdict.reviewed_at) > self.policy.verdict_ttl;
+            if expired || verdict.denied || verdict.risk >= self.ai_deny_threshold {
                 return Decision::Deny;
             }
         } else if self.reviewer.is_some() {
