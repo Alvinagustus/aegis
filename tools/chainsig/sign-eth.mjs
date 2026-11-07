@@ -51,22 +51,17 @@ console.log("intent_hash:", ih);
 console.log("Review command (run first if no verdict on-chain):");
 console.log(`  node ../reviewer/review.mjs --submit '{"chain":"eth","to":"${TO}","amount":"${amountWei}","token":"ETH","memo":"${memo}"}'`);
 
-// --- 2. Policy gate ------------------------------------------------
-const decision = await account.viewFunction({
+// --- 2. Policy gate (state-changing; records spend) ----------------
+const evaluated = await account.functionCall({
   contractId: CONTRACT,
-  methodName: "simulate_tx",
+  methodName: "evaluate_tx",
   args: { chain: "eth", to: TO, amount: amountWei, intent_hash: ih },
+  gas: 50_000_000_000_000n,
 });
+const decision = evaluated?.result ?? evaluated;
 console.log("Watchdog decision:", decision);
 if (decision !== "Approve") {
-  console.log("Not approved — refusing to sign. Creating hold via evaluate_tx…");
-  const result = await account.functionCall({
-    contractId: CONTRACT,
-    methodName: "evaluate_tx",
-    args: { chain: "eth", to: TO, amount: amountWei, intent_hash: ih },
-    gas: 50_000_000_000_000n,
-  });
-  console.log("evaluate_tx result:", result?.result ?? result);
+  console.log("Not approved — refusing to sign.");
   process.exit(0);
 }
 
@@ -82,14 +77,12 @@ console.log("Public key:", publicKey);
 const { balance } = await Evm.getBalance(address);
 console.log("Sepolia balance (ETH):", Number(balance) / 1e18);
 
+const nonce = await publicClient.getTransactionCount({ address });
 const { transaction, hashesToSign } = await Evm.prepareTransactionForSigning({
   from: address,
   to: TO,
   value: parseEther(AMOUNT_ETH),
-  gas: 21000n,
-  maxFeePerGas: 1000000000n,
-  maxPriorityFeePerGas: 1000000000n,
-  nonce: 0,
+  nonce,
 });
 console.log("Unsigned tx prepared. Payload hash:", Buffer.from(hashesToSign[0]).toString("hex").slice(0, 32) + "…");
 
@@ -122,6 +115,13 @@ try {
   const { hash } = await Evm.broadcastTx(signedTx);
   console.log("Broadcast on Sepolia:", hash);
   console.log("Explorer: https://sepolia.etherscan.io/tx/" + hash);
+  const confirmed = await account.functionCall({
+    contractId: CONTRACT,
+    methodName: "confirm_broadcast",
+    args: {},
+    gas: 30_000_000_000_000n,
+  });
+  console.log("confirm_broadcast recorded.");
 } catch (e) {
   console.log("Broadcast skipped (account probably unfunded):", String(e.message || e).slice(0, 160));
 }
