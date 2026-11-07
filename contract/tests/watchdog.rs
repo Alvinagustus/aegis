@@ -459,6 +459,33 @@ fn only_operator_sets_cooldown() {
     expect_panic(|| c.set_panic_cooldown(1));
 }
 
+/// F1 regression (audit poc_f1, inverted): calling evaluate_tx twice to a
+/// new address must stay Hold both times — the quiet period is no longer
+/// bypassed. Release only marks the address seen after eligibility.
+#[test]
+fn f1_double_evaluate_stays_held() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    // first call opens the hold (whitelist so AI/limit rules don't interfere)
+    c.whitelist_add("eth".into(), "0xattacker".into());
+    // without reviewer and whitelist "known" via grace after release only:
+    // use an unknown address instead:
+    c.whitelist_remove("eth".into(), "0xattacker".into());
+    let d1 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into());
+    let d2 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into());
+    assert_eq!(d1, Decision::Hold);
+    assert_eq!(d2, Decision::Hold); // was Approve before the F1 fix
+
+    // release the hold after the quiet period, then evaluate approves
+    c.set_quiet_period_ns(DAY);
+    testing_env!(ctx.block_timestamp(2 * DAY).build());
+    c.release_hold(1);
+    assert_eq!(c.get_hold(1).unwrap().status, HoldStatus::Released);
+    let d3 = c.evaluate_tx("eth".into(), "0xattacker".into(), U128(100), "h".into());
+    assert_eq!(d3, Decision::Approve);
+}
+
 /// Risk out of range is rejected.
 #[test]
 fn verdict_validates_inputs() {

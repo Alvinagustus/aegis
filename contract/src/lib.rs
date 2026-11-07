@@ -247,13 +247,21 @@ impl Watchdog {
             return Decision::Deny;
         }
 
+        // --- rule: existing open hold for this (chain, to) --------------
+        // Opening a hold must never teach the contract the address is known:
+        // otherwise the second evaluate_tx would approve immediately.
+        if self.holds.values().any(|h| h.chain.to_lowercase() == chain.to_lowercase()
+            && h.to == to_norm
+            && (h.status == HoldStatus::Pending || holds_cleared(&h.status)))
+        {
+            Self::event("HOLD_EXISTS", &chain, &to_norm, amount.0);
+            return Decision::Hold;
+        }
+
         // --- rule: first-seen address -> hold for the quiet period --------
         let first_seen = self.seen.get(&address_key).copied();
         let known = matches!(first_seen, Some(t) if now.saturating_sub(t) <= self.policy.known_grace)
             || self.whitelisted.contains_key(&address_key);
-        if !known {
-            self.seen.insert(address_key.clone(), now);
-        }
         if known {
             self.seen.insert(address_key.clone(), now);
             self.record_spend(&day_key, amount.0);
@@ -290,6 +298,32 @@ impl Watchdog {
     // ------------------------------------------------------------------
     // Time capsule — funds locked until a date (e.g. a child's 18th)
     // ------------------------------------------------------------------
+
+    /// Release a hold once it is eligible:
+    /// - `Cleared` once `release_at` has passed, or
+    /// - `Pending` once the quiet period since `requested_at` has elapsed.
+    /// Only then is the address marked seen and the spend recorded —
+    /// evaluating again before release keeps returning Hold.
+    pub fn release_hold(&mut self, id: u64) {
+        self.only_operator();
+        let quiet = self.policy.quiet_period;
+        let hold = self.hold_mut(id);
+        require!(hold.capsule_release_at == 0, "not a plain hold");
+        let now = env::block_timestamp();
+        let eligible = match &hold.status {
+            HoldStatus::Cleared { release_at } => now >= *release_at,
+            HoldStatus::Pending => now.saturating_sub(hold.requested_at) >= quiet,
+            _ => false,
+        };
+        require!(eligible, "hold not yet releasable");
+        let (chain, to, amount) = (hold.chain.clone(), hold.to.clone(), hold.amount);
+        hold.status = HoldStatus::Released;
+        let address_key = format!("{}:{}", chain.to_lowercase(), to);
+        self.seen.insert(address_key, now);
+        let day = now / ONE_DAY_NANO;
+        self.record_spend(&format!("{}|{}", day, chain.to_lowercase()), amount.0);
+        Self::event_hold("HOLD_RELEASED", id, 0);
+    }
 
     /// Seal a capsule: funds are earmarked until `release_at` (ns) and
     /// cannot be released before then, by anyone. After that, release is
