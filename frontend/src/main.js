@@ -25,12 +25,23 @@ if (!globalThis.Buffer) globalThis.Buffer = Buffer;
 const nearAction = (methodName, args, gas = 50_000_000_000_000n, deposit = 0n) =>
   actionCreators.functionCall(methodName, Buffer.from(JSON.stringify(args)), gas, deposit);
 
+const eth = createPublicClient({ chain: sepolia, transport: http("https://ethereum-sepolia-rpc.publicnode.com") });
+
 const CONTRACT = "watchdog-policy-4d8a7f.testnet";
 const CONTRACT_V2 = "watchdog-v2-4d8a7f.testnet";
-const OPERATOR = "watchdog-wallet-4d8a7f.testnet";
 const MPC = "v1.signer-prod.testnet";
-const ETH_ADDRESS = "0xCB1B70ed9BD60FB269A6067aadf41830EcB86c9B";
-const LAST_TX = "0x2c24530d0f2197093d1583c0ad8cdd54f8ff8002e1bf41f3c69eab05a9eee507";
+// Operator and the derived ETH address are NOT hardcoded (F13): operator is
+// read from get_operator() of the active contract, and the ETH address is
+// derived via Chain Signatures for that operator at runtime.
+let OPERATOR = null;
+let ETH_ADDRESS = null;
+
+const signet = new contracts.ChainSignatureContract({ networkId: "testnet", contractId: MPC });
+const evm = new chainAdapters.evm.EVM({ publicClient: eth, contract: signet });
+async function deriveEthAddress(operator) {
+  const { address } = await evm.deriveAddressAndPublicKey(operator, "ethereum-1");
+  return address;
+}
 
 const KNOWN_VERDICTS = [
   { intent_hash: "0ff44a47472603f19687f365bc8a7d9b347cbc40", label: "0.001 ETH → whitelisted (chainsig demo)" },
@@ -56,12 +67,13 @@ const fmtDuration = (ns, secondsPerUnit, unit) => {
 };
 
 // ---- read-only near (views) ------------------------------------------------
+// Views only need *an* on-chain account as the RPC context; the real
+// operator is read from get_operator() below.
 const near = await connect({ networkId: "testnet", keyStore: new keyStores.InMemoryKeyStore(), nodeUrl: "https://test.rpc.fastnear.com" });
-const account = await near.account(OPERATOR);
+const account = await near.account("watchdog-wallet-4d8a7f.testnet");
 const VIEW_METHODS = ["get_operator", "get_policy", "get_reviewer", "get_guardians", "is_panicked", "get_ai_verdict", "get_hold", "simulate_tx", "is_whitelisted", "get_last_checkin", "get_heirs", "is_inheritance_open", "get_employees", "get_payroll_runs"];
 let ACTIVE = localStorage.getItem("AEGIS_CONTRACT") || CONTRACT_V2;
 let viewC = new Contract(account, ACTIVE, { viewMethods: VIEW_METHODS, changeMethods: [] });
-const eth = createPublicClient({ chain: sepolia, transport: http("https://ethereum-sepolia-rpc.publicnode.com") });
 
 // ---- wallet ---------------------------------------------------------------
 let selector = null;
@@ -179,8 +191,10 @@ async function deployAegis({ contractAccount, fundNear, threshold }) {
         50_000_000_000_000n,
         0n
       ),
+      // fund the new account with a real Transfer action (attachedDeposit is
+      // not a wallet-selector parameter and gets ignored)
+      actionCreators.transfer(BigInt(utils.format.parseNearAmount(String(fundNear)))),
     ],
-    attachedDeposit: utils.format.parseNearAmount(String(fundNear)),
   });
   out.innerHTML = `deployed ✓ tx: ${esc(res.transaction.hash)}<br/>switching active contract…`;
   switchActive(contractAccount);
@@ -229,7 +243,7 @@ document.getElementById("deploy-form").addEventListener("submit", async (e) => {
   try {
     await deployAegis({
       contractAccount: account,
-      fundNear: fd.get("fund").trim() || "1",
+      fundNear: fd.get("fund").trim() || "3",
       threshold,
     });
   } catch (err) {
@@ -405,15 +419,25 @@ const safe = async (fn, fallback = null) => {
   }
 };
 
+// Scan hold ids (no list-view exists) for the first hold, or first capsule.
+async function firstHold() {
+  for (let id = 1; id <= 32; id++) {
+    const h = await safe(() => viewC.get_hold({ id }));
+    if (h) return { id, ...h };
+  }
+  return null;
+}
+
 async function load() {
   document.getElementById("active-contract").textContent = ACTIVE;
-  const [operator, policy, reviewer, guardians, panicked, balance] = await Promise.all([
-    safe(() => viewC.get_operator()),
+  OPERATOR = await safe(() => viewC.get_operator());
+  ETH_ADDRESS = OPERATOR ? await safe(() => deriveEthAddress(OPERATOR)) : null;
+  const [policy, reviewer, guardians, panicked, balance] = await Promise.all([
     safe(() => viewC.get_policy()),
     safe(() => viewC.get_reviewer()),
     safe(() => viewC.get_guardians(), []),
     safe(() => viewC.is_panicked()),
-    safe(() => eth.getBalance({ address: ETH_ADDRESS })),
+    ETH_ADDRESS ? eth.getBalance({ address: ETH_ADDRESS }) : 0n,
   ]);
 
   document.querySelector("#stats").innerHTML = [
@@ -424,7 +448,7 @@ async function load() {
   ].join("");
 
   document.querySelector("#accounts").innerHTML = [
-    row("operator (wallet)", operator ? acct(operator) : "—"),
+    row("operator (wallet)", OPERATOR ? acct(OPERATOR) : "—"),
     row("contract", acct(ACTIVE)),
     row("AI reviewer", reviewer ? acct(reviewer) : "— (not set)"),
     row("guardians", guardians.map(acct).join("<br>") || "—"),
@@ -452,23 +476,28 @@ async function load() {
   }
   document.querySelector("#verdicts").innerHTML = verdictRows.join("") || row("—", "no verdicts yet");
 
-  const hold = await safe(() => viewC.get_hold({ id: 1 }));
+  const hold = await firstHold();
   document.querySelector("#holds").innerHTML = hold
     ? [
-        row("hold #1", `${esc(hold.chain)} → ${esc(hold.to)} · amount ${esc(hold.amount)}`),
+        row(`hold #${hold.id}`, `${esc(hold.chain)} → ${esc(hold.to)} · amount ${esc(hold.amount)}`),
         row("status", esc(JSON.stringify(hold.status))),
         row("escalated by", (hold.escrow || []).map(acct).join("<br>") || "—"),
       ].join("")
     : row("—", "none");
 
   document.querySelector("#chainsig").innerHTML = [
-    row("NEAR account", acct(OPERATOR)),
-    row("derived ETH address", `<code>${ETH_ADDRESS}</code>`),
+    row("NEAR account", OPERATOR ? acct(OPERATOR) : "—"),
+    row("derived ETH address", ETH_ADDRESS ? `<code>${ETH_ADDRESS}</code>` : "—"),
     row("Sepolia balance", `${formatEther(balance)} ETH`),
-    row("last guarded broadcast", `<a href="https://sepolia.etherscan.io/tx/${LAST_TX}" target="_blank" rel="noreferrer">0x2c24530d…eee507</a>`),
+    row("proof of concept", `see README — Sepolia tx 0x2c24530d…eee507`),
   ].join("");
 
-  const capsule = await safe(() => viewC.get_hold({ id: 1 }));
+  // first capsule hold (capsule_release_at > 0), scanning ids from 1
+  let capsule = null;
+  for (let id = 1; id <= 32 && !capsule; id++) {
+    const h = await safe(() => viewC.get_hold({ id }));
+    if (h && h.capsule_release_at > 0) capsule = h;
+  }
   document.querySelector("#capsule").innerHTML = capsule && capsule.capsule_release_at > 0
     ? [
         row("capsule", `${esc(capsule.chain)} → ${esc(capsule.to)} · amount ${esc(capsule.amount)} wei`),
