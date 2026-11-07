@@ -19,7 +19,7 @@ import { chainAdapters, contracts } from "chainsig.js";
 import * as nearAPI from "near-api-js";
 
 const OPERATOR = "watchdog-wallet-4d8a7f.testnet";
-const CONTRACT = "watchdog-policy-4d8a7f.testnet";
+const CONTRACT = "watchdog-v3-4d8a7f.testnet";
 const MPC = "v1.signer-prod.testnet";
 const PATH = "ethereum-1";
 const TO = process.argv[2] || "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
@@ -34,13 +34,13 @@ function loadKeychain(accountId) {
 }
 
 function intentHash(chain, to, amount, memo) {
-  return crypto.createHash("sha256").update(`${chain}|${to.toLowerCase()}|${amount}|${memo}`).digest("hex").slice(0, 40);
+  return crypto.createHash("sha256").update(`${chain}|${to.toLowerCase()}|${amount}|${memo}`).digest("hex");
 }
 
 const keyPair = nearAPI.KeyPair.fromString(loadKeychain(OPERATOR));
 const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
 await keyStore.setKey("testnet", OPERATOR, keyPair);
-const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://test.rpc.fastnear.com" });
+const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://testnet-rpc.intea.rs" });
 const account = await near.account(OPERATOR);
 
 // --- 1. intent hash (must match the reviewer's) --------------------
@@ -52,7 +52,7 @@ const memoHash = crypto.createHash("sha256").update(memo).digest("hex");
 const nonce = Number(
   await account.viewFunction({ contractId: CONTRACT, methodName: "get_nonce", args: {} }),
 ).catch(() => 0);
-const ih = crypto.createHash("sha256").update(`eth|${TO.toLowerCase()}|${amountWei}|${memoHash}|${nonce}`).digest("hex").slice(0, 40);
+const ih = crypto.createHash("sha256").update(`eth|${TO.toLowerCase()}|${amountWei}|${memoHash}|${nonce}`).digest("hex");
 console.log("intent_hash:", ih);
 console.log("Review command (run first if no verdict on-chain):");
 console.log(`  node ../reviewer/review.mjs --submit '{"chain":"eth","to":"${TO}","amount":"${amountWei}","token":"ETH","memo":"${memo}"}'`);

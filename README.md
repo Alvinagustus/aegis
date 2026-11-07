@@ -88,7 +88,7 @@ mined in block 12067827, status `success`:
 
 ## Products
 
-- `contract/` — NEAR smart contract (Rust, `near-sdk 5`). A policy engine with the rules: daily limit, first-seen address → hold (quiet period), whitelist, panic mode (all spending frozen by the guardian, unfreeze only by owner after cooldown), guardian escalation M-of-N, cancel by the owner. **Also ships three usage patterns on the same engine:** time capsules (seal funds until a date + letter), digital inheritance (check-in clock, guardians open the estate after silence), and payroll (registered employees paid in batches under the same daily limit). 22 unit tests.
+- `contract/` — NEAR smart contract (Rust, `near-sdk 5`). A policy engine with the rules: daily limit, first-seen address → hold (quiet period), whitelist, panic mode (all spending frozen by the guardian, unfreeze only by owner after cooldown), guardian escalation M-of-N, cancel by the owner. **Also ships three usage patterns on the same engine:** time capsules (seal funds until a date + letter), digital inheritance (check-in clock, guardians open the estate after silence), and payroll (registered employees paid in batches under the same daily limit). 29 unit tests.
 - **AI reviewer agent** (`tools/reviewer/`) — a risk model running inside NEAR AI Cloud's TEE (Qwen3.8-27B) scores each intent and attests its verdict on-chain via `submit_verdict(risk 0–100, denied, model)`. Only the appointed reviewer account can do that, so the operator cannot forge a "safe" score for its own transfer. Verdicts are public and auditable. Rules: no verdict → deny; AI deny or risk ≥ 70 → deny even for whitelisted addresses; low risk → continue to the plain rules.
 - **Chain Signatures signer** (`tools/chainsig/`) — chainsig.js derives the operator's Ethereum address via the NEAR MPC network, prepares the tx, gets it MPC-signed, finalizes and broadcasts to Sepolia. Signing only happens after the Aegis contract approves.
 - `frontend/` — Vite dashboard: a **live read-only window** into the policy engine (policy, verdicts, holds, panic state, derived ETH address + Sepolia balance). Read-only by design: the operator key and NEAR AI API key never touch the browser; transfers are executed by the operator agent (`tools/chainsig/`).
@@ -115,7 +115,7 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
      --networkId testnet
    # → "Approve"
    ```
-   Every benchmark intent (16/16 in `tools/bench/results.html`) has its
+   Every benchmark intent (18/18 in `tools/bench/results.html`) has its
    verdict already on-chain — judges can re-decide them all with view calls.
 2. **Score a benign intent with the AI reviewer:**
    ```sh
@@ -163,6 +163,16 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 
 ## Failure cases and honest limitations
 
+> **Trust model — read this first.** The policy engine governs the
+> cooperating signer script (`tools/chainsig/`) and anyone using the
+> documented flow. It does **not** physically bind the MPC network:
+> whoever holds the operator's NEAR key can call
+> `v1.signer-prod.testnet.sign` directly and skip every rule. That is why
+> the operator key must be guarded as strictly as a hot-wallet key — Aegis
+> contains the damage (AI gate, limits, holds, panic) but cannot prevent a
+> fully compromised operator acting outside the script. The production
+> fix — the contract itself calling MPC `sign` — is on the roadmap.
+
 - **Hostile/gone guardian**: panic can only be unfrozen by the owner after the cooldown (default 3 days; owner-configurable on-chain, e.g. 60 s on the test contract) — a hostile guardian cannot brick the wallet forever, and a hostile owner cannot instantly dismiss the guardian's alarm. But a panicked guardian can delay user's spending for the duration of the cooldown — a deliberate trade-off: safety > convenience.
 - **Stolen operator key**: attacker still need pass through the daily limit and the hold. They **cannot** reset the rules — `mode panic` runs and the damage is cut short.
 - **All guardians also get compromised**: currently the demo has an owner-managed guardians — this limitation is disclosed, the production version should use guardian self-enrolment / DAO.
@@ -194,7 +204,7 @@ inside a TEE with its verdict anchored on-chain** — non-custodial throughout.
 ### Red-team benchmark (`tools/bench/`)
 
 `node bench.mjs` runs **11 attacks + 4 benign controls + 1 panic cycle**
-against the live reviewer + contract. Latest run: **16/16 passed**
+against the live reviewer + contract. Latest run: **18/18 passed**
 (see `tools/bench/results.html`).
 
 | | |
@@ -228,7 +238,7 @@ Contract (Rust → WASM, deployable to NEAR testnet):
 ```sh
 cd contract
 cargo build --target wasm32-unknown-unknown --release   # WASM at target/wasm32-unknown-unknown/release/watchdog.wasm
-cargo test                                              # 22 unit tests
+cargo test                                              # 29 unit tests
 ```
 
 AI reviewer agent:

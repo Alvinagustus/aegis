@@ -110,7 +110,7 @@ export function intentHash(intent, nonce) {
   const memoHash = crypto.createHash("sha256").update(intent.memo || "").digest("hex");
   return (
     intent.intent_hash ||
-    crypto.createHash("sha256").update(`${intent.chain}|${intent.to.toLowerCase()}|${intent.amount}|${memoHash}|${nonce ?? 0}`).digest("hex").slice(0, 40)
+    crypto.createHash("sha256").update(`${intent.chain}|${intent.to.toLowerCase()}|${intent.amount}|${memoHash}|${nonce ?? 0}`).digest("hex")
   );
 }
 
@@ -124,7 +124,7 @@ async function submitOnChain({ intentHash, risk, denied, model }) {
   const near = await nearAPI.connect({
     networkId: "testnet",
     keyStore,
-    nodeUrl: "https://test.rpc.fastnear.com",
+    nodeUrl: "https://testnet-rpc.intea.rs",
   });
   const account = await near.account(process.env.REVIEWER_ACCOUNT);
   const result = await account.functionCall({
@@ -150,7 +150,7 @@ if (process.env.WATCHDOG_CONTRACT && process.env.REVIEWER_ACCOUNT && process.env
   try {
     const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
     await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
-    const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://test.rpc.fastnear.com" });
+    const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://testnet-rpc.intea.rs" });
     nonce = Number(await near.account(process.env.REVIEWER_ACCOUNT).viewFunction({ contractId: process.env.WATCHDOG_CONTRACT, methodName: "get_nonce", args: {} }));
   } catch (e) {
     console.error("could not read get_nonce (using 0):", e.message);

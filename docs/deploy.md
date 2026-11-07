@@ -7,6 +7,7 @@
 | Deployer / operator | `watchdog-wallet-4d8a7f.testnet` | Calls `evaluate_tx`; deploys contract |
 | Contract v1 (policy engine) | `watchdog-policy-4d8a7f.testnet` | Policy engine (watchdog.wasm) |
 | Contract v2 (capsule / inheritance / payroll) | `watchdog-v2-4d8a7f.testnet` | Same engine + 3 usage patterns |
+| Contract v3 (audited, current) | `watchdog-v3-4d8a7f.testnet` | All audit fixes + timelock + store maps |
 | Test contract (panic flow, 60 s cooldown) | `watchdog-test-4d8a7f.testnet` | Panic-cycle testing only |
 | AI reviewer | `watchdog-reviewer-4d8a7f.testnet` | Submits `submit_verdict` |
 | Guardian | `watchdog-guardian-4d8a7f.testnet` | `panic_on` / `hold_escalate` |

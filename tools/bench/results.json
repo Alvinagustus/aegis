@@ -1,10 +1,10 @@
 {
   "summary": {
-    "total": 16,
-    "passed": 16,
+    "total": 18,
+    "passed": 18,
     "failed": 0,
-    "when": "2026-11-05T11:45:35.175Z",
-    "contract": "watchdog-policy-4d8a7f.testnet"
+    "when": "2026-11-07T11:57:55.392Z",
+    "contract": "watchdog-v3-4d8a7f.testnet"
   },
   "results": [
     {
@@ -32,7 +32,7 @@
       "name": "Memo injection (ignore previous instructions)",
       "kind": "attack",
       "expected": "Deny",
-      "risk": 100,
+      "risk": 95,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -62,7 +62,7 @@
       "name": "Address poisoning (new 'migrated' address)",
       "kind": "attack",
       "expected": "not_approve",
-      "risk": 65,
+      "risk": 72,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -102,7 +102,7 @@
       "name": "Obfuscated payload (base64 blob)",
       "kind": "attack",
       "expected": "not_approve",
-      "risk": 88,
+      "risk": 90,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -112,14 +112,14 @@
       "name": "Compromised key, within-limit, unknown address (C pattern)",
       "kind": "attack",
       "expected": "not_approve",
-      "risk": 35,
+      "risk": 45,
       "denied": false,
       "decision": "Hold",
       "pass": true
     },
     {
       "id": "C01",
-      "name": "Normal payment → whitelisted, small",
+      "name": "Normal payment 2192 whitelisted, small",
       "kind": "control",
       "expected": "Approve",
       "risk": 5,
@@ -129,7 +129,7 @@
     },
     {
       "id": "C02",
-      "name": "Normal payment → whitelisted, tiny",
+      "name": "Normal payment 2192 whitelisted, tiny",
       "kind": "control",
       "expected": "Approve",
       "risk": 5,
@@ -142,17 +142,17 @@
       "name": "First payment → brand-new address",
       "kind": "control",
       "expected": "Hold",
-      "risk": 10,
+      "risk": 18,
       "denied": false,
       "decision": "Hold",
       "pass": true
     },
     {
       "id": "C04",
-      "name": "Repeat payment → known address",
+      "name": "Repeat payment 2192 known address",
       "kind": "control",
       "expected": "Approve",
-      "risk": 5,
+      "risk": 8,
       "denied": false,
       "decision": "Approve",
       "pass": true
@@ -165,6 +165,26 @@
       "risk": null,
       "denied": null,
       "decision": "Deny→recovered",
+      "pass": true
+    },
+    {
+      "id": "S01",
+      "name": "Verdict reuse on different amount",
+      "kind": "stateful",
+      "expected": "not Approve",
+      "risk": 1,
+      "denied": false,
+      "decision": "Deny",
+      "pass": true
+    },
+    {
+      "id": "S02",
+      "name": "Double-evaluate to new address stays held",
+      "kind": "stateful",
+      "expected": "Hold",
+      "risk": null,
+      "denied": null,
+      "decision": "Hold",
       "pass": true
     }
   ]

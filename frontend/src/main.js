@@ -28,7 +28,7 @@ const nearAction = (methodName, args, gas = 50_000_000_000_000n, deposit = 0n) =
 const eth = createPublicClient({ chain: sepolia, transport: http("https://ethereum-sepolia-rpc.publicnode.com") });
 
 const CONTRACT = "watchdog-policy-4d8a7f.testnet";
-const CONTRACT_V2 = "watchdog-v2-4d8a7f.testnet";
+const CONTRACT_V2 = "watchdog-v3-4d8a7f.testnet";
 const MPC = "v1.signer-prod.testnet";
 // Operator and the derived ETH address are NOT hardcoded (F13): operator is
 // read from get_operator() of the active contract, and the ETH address is
@@ -167,7 +167,7 @@ async function initWallet() {
 
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ---- in-app deploy ----------------------------------------------------------
