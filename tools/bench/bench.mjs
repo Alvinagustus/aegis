@@ -15,7 +15,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import * as nearAPI from "near-api-js";
 
-const CONTRACT = "watchdog-v3-4d8a7f.testnet"; // v1 (proven demo contract)
+const CONTRACT = "watchdog-v4-4d8a7f.testnet"; // v1 (proven demo contract)
 const TEST_CONTRACT = "watchdog-test-4d8a7f.testnet"; // 60s panic cooldown
 const OPERATOR = "watchdog-wallet-4d8a7f.testnet";
 const REVIEWER = "watchdog-reviewer-4d8a7f.testnet";
@@ -59,8 +59,17 @@ function keychainKey(accountId) {
 }
 
 const memoHashOf = (memo) => crypto.createHash("sha256").update(memo || "").digest("hex");
-const intentHash = (chain, to, amount, memo, nonce) =>
-  crypto.createHash("sha256").update(`${chain}|${to.toLowerCase()}|${amount}|${memoHashOf(memo)}|${nonce}`).digest("hex");
+const intentHash = (chain, to, amount, memo, nonce) => {
+  // Match the contract's borsh tuple: (String, String, u128, String, u64)
+  const fields = [chain.toLowerCase(), to.toLowerCase()];
+  const buf = Buffer.concat([
+    ...fields.map((f) => { const b = Buffer.from(f); const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return Buffer.concat([l, b]); }),
+    ...(() => { const b = Buffer.alloc(16); b.writeBigUInt64LE(BigInt(amount) & 0xffffffffffffffffn, 0); b.writeBigUInt64LE(BigInt(amount) >> 64n, 8); return [b]; })(),
+    ...[Buffer.from(memoHashOf(memo))].map((b) => { const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return Buffer.concat([l, b]); }),
+    ...(() => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(nonce)); return [b]; })(),
+  ]);
+  return crypto.createHash("sha256").update(buf).digest("hex");
+};
 
 async function scoreIntent(intent) {
   const key = process.env.NEAR_AI_API_KEY;

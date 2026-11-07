@@ -106,13 +106,16 @@ function parseVerdict(text) {
 }
 
 export function intentHash(intent, nonce) {
-  // Must match the contract's compute_intent_hash:
-  // sha256("chain|to_lower|amount|memo_hash|nonce") with memo_hash = sha256(memo)
-  const memoHash = crypto.createHash("sha256").update(intent.memo || "").digest("hex");
-  return (
-    intent.intent_hash ||
-    crypto.createHash("sha256").update(`${intent.chain}|${intent.to.toLowerCase()}|${intent.amount}|${memoHash}|${nonce ?? 0}`).digest("hex")
-  );
+  // Must match the contract's borsh tuple hash (N9):
+  // sha256(borsh(chain, to, amount, memo_hash, nonce)), memo_hash = sha256(memo)
+  const fields = [intent.chain.toLowerCase(), intent.to.toLowerCase()];
+  const buf = Buffer.concat([
+    ...fields.map((f) => { const b = Buffer.from(f); const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return Buffer.concat([l, b]); }),
+    ...(() => { const b = Buffer.alloc(16); b.writeBigUInt64LE(BigInt(intent.amount) & 0xffffffffffffffffn, 0); b.writeBigUInt64LE(BigInt(intent.amount) >> 64n, 8); return [b]; })(),
+    ...(() => { const b = Buffer.from(memoHash); const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return [Buffer.concat([l, b])]; })(),
+    ...(() => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(nonce ?? 0)); return [b]; })(),
+  ]);
+  return intent.intent_hash || crypto.createHash("sha256").update(buf).digest("hex");
 }
 
 async function submitOnChain({ intentHash, risk, denied, model }) {

@@ -52,7 +52,16 @@ const memoHash = crypto.createHash("sha256").update(memo).digest("hex");
 const nonceRaw = await account.viewFunction({ contractId: CONTRACT, methodName: "get_nonce", args: {} });
 const nonce = Number(nonceRaw);
 if (!Number.isInteger(nonce) || nonce < 0) throw new Error(`bad get_nonce result: ${nonceRaw}`);
-const ih = crypto.createHash("sha256").update(`eth|${TO.toLowerCase()}|${amountWei}|${memoHash}|${nonce}`).digest("hex");
+const ih = (() => {
+  const fields = ["eth", TO.toLowerCase()];
+  const buf = Buffer.concat([
+    ...fields.map((f) => { const b = Buffer.from(f); const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return Buffer.concat([l, b]); }),
+    ...(() => { const b = Buffer.alloc(16); b.writeBigUInt64LE(BigInt(amountWei) & 0xffffffffffffffffn, 0); b.writeBigUInt64LE(BigInt(amountWei) >> 64n, 8); return [b]; })(),
+    ...[memoHash ? Buffer.from(memoHash) : Buffer.alloc(0)].map((b) => { const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return Buffer.concat([l, b]); }),
+    ...(() => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(nonce)); return [b]; })(),
+  ]);
+  return crypto.createHash("sha256").update(buf).digest("hex");
+})();
 console.log("intent_hash:", ih);
 console.log("Review command (run first if no verdict on-chain):");
 console.log(`  node ../reviewer/review.mjs --submit '{"chain":"eth","to":"${TO}","amount":"${amountWei}","token":"ETH","memo":"${memo}"}'`);
