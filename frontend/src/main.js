@@ -24,7 +24,7 @@ const nearAction = (methodName, args, gas = 50_000_000_000_000n, deposit = 0n) =
 // ───────────────── constants ─────────────────
 const params = new URLSearchParams(location.search);
 const DEMO = params.has("demo");
-const DEFAULT_CONTRACT = "watchdog-v4-4d8a7f.testnet"; // demo deployment, switchable in Setup
+const DEFAULT_CONTRACT = "watchdog-v5-4d8a7f.testnet"; // current audited deployment, switchable in Setup
 const MPC = "v1.signer-prod.testnet";
 const ETH_PATH = "ethereum-1";
 const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com";
@@ -32,6 +32,7 @@ const NODE_URL = "https://test.rpc.fastnear.com";
 const ACCOUNT_RE = /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
 const STORAGE_BYTE_COST = 10n ** 19n; // yoctoNEAR per stored byte
 const HOLD_SCAN_LIMIT = 15;
+const ADMIN_DAY_NS = "86400000000000"; // 1 day, the production admin timelock
 
 // Fallback so the demo deployment still shows an address if chainsig.js cannot load.
 const KNOWN_ETH = { "watchdog-wallet-4d8a7f.testnet": "0xCB1B70ed9BD60FB269A6067aadf41830EcB86c9B" };
@@ -121,7 +122,7 @@ async function initView() {
   window.__nearAccount = account;
   makeView();
 }
-const VIEW_METHODS = ["get_operator", "get_policy", "get_reviewer", "get_guardians", "is_panicked", "get_ai_verdict", "get_hold", "simulate_tx", "is_whitelisted", "get_nonce", "compute_intent_hash", "get_last_checkin", "get_heirs", "is_inheritance_open", "get_employees", "get_payroll_runs"];
+const VIEW_METHODS = ["get_operator", "get_policy", "get_reviewer", "get_guardians", "is_panicked", "get_ai_verdict", "get_hold", "simulate_tx", "is_whitelisted", "get_nonce", "compute_intent_hash", "get_last_checkin", "get_heirs", "is_inheritance_open", "get_employees", "get_payroll_runs", "get_admin_proposals", "get_admin_delay"];
 function makeView() {
   if (DEMO) return;
   viewC = new Contract(window.__nearAccount, ACTIVE, { viewMethods: VIEW_METHODS, changeMethods: [] });
@@ -283,7 +284,7 @@ function computeHealth() {
   if (limit > 1000) add("bad", "Daily limit is effectively unlimited", `${fmtEth(lim)} ETH per day — set a realistic cap (propose_daily_limit).`);
   else if (limit > 10) add("warn", "Daily limit is high", `${fmtEth(lim)} ETH per day.`);
   else if (Number.isFinite(limit)) add("ok", "Daily limit is sensible", `${fmtEth(lim)} ETH per day.`);
-  else add("warn", "No daily limit configured", "Chains without a limit fall back to the eth limit.");
+  else add("warn", "No daily limit configured", "Unlisted chains share the `other` bucket and are denied until a limit is set.");
 
   const quiet = Number(p.quiet_period);
   if (quiet < 3600e9) add("warn", "Quiet period is very short", `${fmtNs(quiet)} — the contract stores nanoseconds; a value in seconds would show up like this.`);
@@ -365,6 +366,7 @@ async function load() {
   ].join("");
 
   await renderHolds();
+  await renderPending();
 
   const [lastCheckin, heirs, inheritanceOpen, employees, payrollRuns] = await Promise.all([
     safe(() => viewC.get_last_checkin()),
@@ -427,6 +429,73 @@ async function renderHolds() {
   box.innerHTML = rows.length
     ? `<div class="table-wrap"><table class="grid-table"><thead><tr><th>id</th><th>type</th><th>transfer</th><th>amount</th><th>status</th><th>details</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
     : `<p class="empty">No holds or capsules on this contract yet.</p>`;
+}
+
+// ───────────────── pending admin changes (timelock + veto) ─────────────────
+function applyCallFor(action) {
+  const fixed = {
+    reviewer: ["apply_reviewer", {}],
+    reviewer_none: ["apply_reviewer_none", {}],
+    panic_cooldown: ["apply_panic_cooldown", {}],
+    quiet_period_ns: ["apply_quiet_period_ns", {}],
+    set_inheritance_timeout: ["apply_set_inheritance_timeout", {}],
+    ai_deny_threshold: ["apply_ai_deny_threshold", {}],
+    guard_threshold: ["apply_guard_threshold", {}],
+    admin_delay: ["apply_admin_delay", {}],
+    known_grace: ["apply_known_grace", {}],
+    verdict_ttl: ["apply_verdict_ttl", {}],
+    set_heirs: ["apply_set_heirs", {}],
+  };
+  if (fixed[action]) return fixed[action];
+  if (action.startsWith("whitelist_add:")) {
+    const rest = action.slice("whitelist_add:".length);
+    const i = rest.indexOf(":");
+    if (i > 0) return ["apply_whitelist_add", { chain: rest.slice(0, i), address: rest.slice(i + 1) }];
+  }
+  if (action.startsWith("guardian_add:")) return ["apply_guardian_add", { account: action.slice("guardian_add:".length) }];
+  if (action.startsWith("guardian_remove:")) return ["apply_guardian_remove", { account: action.slice("guardian_remove:".length) }];
+  if (action.startsWith("daily_limit:")) return ["apply_daily_limit", { chain: action.slice("daily_limit:".length) }];
+  if (action.startsWith("add_employee:")) return ["apply_add_employee", { address: action.slice("add_employee:".length) }];
+  return [null, {}];
+}
+
+function prettyPayload(payload) {
+  try { return JSON.stringify(JSON.parse(payload)); } catch { return String(payload ?? ""); }
+}
+
+async function renderPending() {
+  const box = $("pending");
+  if (!box) return;
+  const [proposals, delay] = await Promise.all([
+    safe(() => viewC.get_admin_proposals(), []),
+    safe(() => viewC.get_admin_delay(), 0),
+  ]);
+  const list = proposals || [];
+  if (!list.length) {
+    box.innerHTML = `<p class="empty">No pending admin changes.</p>`;
+    return;
+  }
+  const now = Date.now() * 1e6;
+  const rows = list.map(([action, payload, proposedAt]) => {
+    const [method, args] = applyCallFor(action);
+    const eligibleAt = Number(proposedAt) + Number(delay);
+    const ready = now >= eligibleAt;
+    return `<tr>
+      <td class="mono wrap">${esc(action)}</td>
+      <td class="mono wrap">${esc(prettyPayload(payload))}</td>
+      <td>${ready ? pill("ready", "ok") : pill(`after ${fmtDate(eligibleAt)}`, "warn")}</td>
+      <td class="actions">${method ? `<button class="btn btn-sm" data-apply="${esc(action)}" data-method="${esc(method)}" data-args="${esc(JSON.stringify(args))}" ${ready ? "" : "disabled"}>Apply</button>` : ""}
+        <button class="btn btn-ghost btn-sm" data-veto="${esc(action)}" data-role="guardian">Veto</button></td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `<div class="table-wrap"><table class="grid-table"><thead><tr><th>action</th><th>payload — what will be applied</th><th>timelock</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  box.querySelectorAll("button[data-apply]").forEach((btn) => btn.addEventListener("click", () => {
+    act(btn, "apply change", () => callContract(btn.dataset.method, JSON.parse(btn.dataset.args || "{}")));
+  }));
+  box.querySelectorAll("button[data-veto]").forEach((btn) => btn.addEventListener("click", () => {
+    if (!confirm(`Veto "${btn.dataset.veto}"?`)) return;
+    act(btn, "veto", () => callContract("guardian_veto", { action: btn.dataset.veto }));
+  }));
 }
 
 // ───────────────── verdict lookup ─────────────────
@@ -512,7 +581,7 @@ $("whitelist-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const to = (new FormData(e.target).get("address").trim() || currentIntent?.to || "");
   if (!/^0x[0-9a-fA-F]{40}$/.test(to)) return toast("Not a valid EVM address", { detail: to || "Enter the 0x… address first.", kind: "bad" });
-  act($("act-whitelist"), "whitelist", () => callContract("whitelist_add", { chain: "eth", address: to }));
+  act($("act-whitelist"), "propose whitelist", () => callContract("propose_whitelist_add", { chain: "eth", address: to }));
 });
 $("cancel-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -577,11 +646,14 @@ async function showDeployNeed() {
   } catch { el.textContent = ""; }
 }
 
-async function deployAegis({ contractAccount, fundNear, threshold }) {
+async function deployAegis({ contractAccount, fundNear, threshold, reviewer, guardian }) {
   if (!wallet) throw new Error("Connect a NEAR wallet first.");
   if (!ACCOUNT_RE.test(contractAccount)) throw new Error("That is not a valid NEAR account id.");
   const operator = connectedAccount();
   if (!contractAccount.endsWith(`.${operator}`)) throw new Error(`A new contract account must be a sub-account of ${operator} (e.g. aegis.${operator}).`);
+  const th = Number(threshold) || 1;
+  if (guardian && th > 1) throw new Error("Deploy initializes at most one guardian — set the threshold to 1, then add more via Pending admin changes.");
+  if (reviewer && !guardian) throw new Error("A reviewer needs at least one guardian at init (threshold ≥ 1) — add the guardian field.");
   const out = $("deploy-out");
   out.innerHTML = `<span class="hint">Fetching watchdog.wasm…</span>`;
   const wasm = await wasmBytes();
@@ -589,6 +661,11 @@ async function deployAegis({ contractAccount, fundNear, threshold }) {
   if (deposit < minFundYocto(wasm.length)) {
     throw new Error(`Not enough funding: ${fundNear} NEAR is below the ${utils.format.formatNearAmount(minFundYocto(wasm.length).toString(), 2)} NEAR the code needs.`);
   }
+  // V1: configure everything atomically at init; no instant post-init setters.
+  const method = guardian ? "new_configured" : "new";
+  const args = guardian
+    ? { operator, guard_threshold: th, admin_delay: ADMIN_DAY_NS, reviewer: reviewer || null, guardians: [guardian], whitelist: [] }
+    : { operator, guard_threshold: th };
   out.innerHTML = `<span class="hint">One wallet transaction: create account + fund + deploy + init — confirm in your wallet.</span>`;
   const res = await wallet.signAndSendTransaction({
     signerId: operator,
@@ -597,7 +674,7 @@ async function deployAegis({ contractAccount, fundNear, threshold }) {
       actionCreators.createAccount(),
       actionCreators.transfer(deposit),
       actionCreators.deployContract(wasm),
-      actionCreators.functionCall("new", Buffer.from(JSON.stringify({ operator, guard_threshold: Number(threshold) })), 50_000_000_000_000n, 0n),
+      actionCreators.functionCall(method, Buffer.from(JSON.stringify(args)), 50_000_000_000_000n, 0n),
     ],
   });
   out.innerHTML = `${pill("deployed", "ok")} <span class="mono">${esc(txHash(res) || "sent — check the explorer")}</span> <span class="hint">Switching the dashboard to the new contract…</span>`;
@@ -610,10 +687,13 @@ $("deploy-form").addEventListener("submit", async (e) => {
   const account = fd.get("account").trim().toLowerCase();
   const threshold = fd.get("threshold").trim() || "1";
   const fund = fd.get("fund").trim() || "5";
+  const reviewer = fd.get("reviewer").trim();
+  const guardian = fd.get("guardian").trim();
   if (!(Number(threshold) >= 1)) return toast("Threshold must be at least 1", { kind: "bad" });
+  for (const a of [reviewer, guardian]) if (a && !ACCOUNT_RE.test(a)) return toast("Invalid NEAR account id", { detail: a, kind: "bad" });
   await busy(e.target.querySelector("button[type=submit]"), "Deploying…", async () => {
     try {
-      await deployAegis({ contractAccount: account, fundNear: fund, threshold });
+      await deployAegis({ contractAccount: account, fundNear: fund, threshold, reviewer, guardian });
     } catch (err) {
       const msg = errMsg(err);
       $("deploy-out").innerHTML = WALLET_DEPLOY_BLOCK.test(msg)
@@ -632,8 +712,8 @@ $("configure-form").addEventListener("submit", async (e) => {
   if (!wallet) return toast("Connect a wallet first", { kind: "bad" });
   for (const a of [reviewer, guardian]) if (a && !ACCOUNT_RE.test(a)) return toast("Invalid NEAR account id", { detail: a, kind: "bad" });
   const steps = [];
-  if (reviewer) steps.push({ methodName: "set_reviewer", args: { reviewer } });
-  if (guardian) steps.push({ methodName: "guardian_add", args: { account: guardian } });
+  if (reviewer) steps.push({ methodName: "propose_reviewer", args: { reviewer } });
+  if (guardian) steps.push({ methodName: "propose_guardian_add", args: { account: guardian } });
   if (!steps.length) return toast("Enter a reviewer and/or a guardian", { kind: "bad" });
   await busy(e.target.querySelector("button[type=submit]"), "Sending…", async () => {
     try {
@@ -642,6 +722,7 @@ $("configure-form").addEventListener("submit", async (e) => {
         const res = await callContract(s.methodName, s.args);
         out.innerHTML = `${pill(`${s.methodName} sent`, "ok")} <span class="mono">${esc(txHash(res) || "sent")}</span>`;
       }
+      out.innerHTML += `<p class="hint">Apply these from “Pending admin changes” after the timelock (guardians can veto meanwhile).</p>`;
       await load();
     } catch (err) {
       out.innerHTML = `${pill("configure failed", "bad")} <span class="mono">${esc(errMsg(err))}</span>`;

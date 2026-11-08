@@ -21,7 +21,7 @@ fn contract() -> Watchdog {
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.predecessor_account_id(oper()).build());
     let mut c = Watchdog::new(oper(), 2);
-    c.set_admin_delay(0); // tests operate without the 1-day timelock
+    c.admin_delay = 0; // unit tests operate without the 1-day timelock
     c
 }
 
@@ -765,4 +765,145 @@ fn verdict_validates_inputs() {
     testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id(oper()).build());
     c.apply_reviewer_none();
     assert!(c.get_reviewer().is_none());
+}
+
+// ------------------------------------------------------------------
+// V1–V8 regression tests (inverted PoCs from AEGIS_REAUDIT_V4.md)
+// ------------------------------------------------------------------
+
+/// V1: the timelock cannot be zeroed or lowered instantly; known_grace and
+/// verdict_ttl are no longer instant setters.
+#[test]
+fn v1_admin_delay_cannot_collapse_the_timelock() {
+    let mut ctx = VMContextBuilder::new();
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
+    let mut c = Watchdog::new(oper(), 1);
+    assert_eq!(c.get_admin_delay(), DAY);
+
+    expect_panic(|| c.set_admin_delay(0));
+    expect_panic(|| c.set_admin_delay(DAY - 1));
+    c.set_admin_delay(2 * DAY); // increases are instant
+    assert_eq!(c.get_admin_delay(), 2 * DAY);
+
+    // lowering must wait for the *current* delay and can never go below 5m
+    c.propose_admin_delay(DAY);
+    expect_panic(|| c.apply_admin_delay());
+    testing_env!(ctx.block_timestamp(3 * DAY).build());
+    c.apply_admin_delay();
+    assert_eq!(c.get_admin_delay(), DAY);
+    expect_panic(|| c.propose_admin_delay(0));
+
+    expect_panic(|| c.set_known_grace(0));
+    expect_panic(|| c.set_verdict_ttl(0));
+}
+
+/// V2: a veto only counts against a live proposal and cannot be pre-loaded.
+#[test]
+fn v2_veto_requires_a_live_proposal() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    guardian(&mut c, GUARD1.parse().unwrap());
+    testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
+    expect_panic(|| c.guardian_veto("reviewer".into()));
+}
+
+/// V3: a capsule cannot be sealed to open before the quiet period.
+#[test]
+fn v3_capsule_respects_the_quiet_period() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    expect_panic(|| { c.create_capsule("eth".into(), "0xevil".into(), U128(1), DAY / 2, "x".into()); });
+    let id = c.create_capsule("eth".into(), "0xevil".into(), U128(1), DAY, "x".into());
+    testing_env!(ctx.block_timestamp(DAY).predecessor_account_id(oper()).build());
+    c.release_capsule(id);
+    let nonce = c.get_nonce();
+    assert_eq!(
+        c.evaluate_tx("eth".into(), "0xevil".into(), U128(1), "m".into(), nonce),
+        Decision::Approve
+    );
+}
+
+/// V4: every unlisted label shares the `other` bucket, so relabeling cannot
+/// multiply the daily limit.
+#[test]
+fn v4_unlisted_labels_share_one_bucket() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    let labels = ["linea", "scroll", "blast"];
+    for l in labels {
+        wl(&mut c, l, "0xa");
+    }
+    for l in labels {
+        assert_eq!(eval(&mut c, l, "0xa", U128(1), ""), Decision::Deny);
+    }
+    c.propose_daily_limit("other".into(), U128(100));
+    c.apply_daily_limit("other".into());
+    assert_eq!(eval(&mut c, "linea", "0xa", U128(40), ""), Decision::Approve);
+    assert_eq!(eval(&mut c, "scroll", "0xa", U128(40), ""), Decision::Approve);
+    assert_eq!(eval(&mut c, "blast", "0xa", U128(40), ""), Decision::Deny);
+}
+
+/// V5: guardians can read the exact payload they are voting on.
+#[test]
+fn v5_admin_payload_is_public() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    c.propose_reviewer(REVIEWER.parse().unwrap());
+    let payload = c.get_admin_payload("reviewer".into()).unwrap();
+    assert!(payload.contains(REVIEWER));
+    assert!(c
+        .get_admin_proposals()
+        .iter()
+        .any(|(a, p, _)| a == "reviewer" && p.contains(REVIEWER)));
+}
+
+/// V6: a removal that would drop guardians below the threshold is rejected.
+#[test]
+fn v6_guardian_removal_cannot_break_the_threshold() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    guardian(&mut c, GUARD1.parse().unwrap());
+    guardian(&mut c, GUARD2.parse().unwrap());
+    c.propose_guardian_remove(GUARD2.parse().unwrap());
+    expect_panic(|| c.apply_guardian_remove(GUARD2.parse().unwrap()));
+    // lower the threshold first, then the removal is allowed
+    thresh(&mut c, 1);
+    c.propose_guardian_remove(GUARD2.parse().unwrap());
+    c.apply_guardian_remove(GUARD2.parse().unwrap());
+    assert_eq!(c.get_guardians().len(), 1);
+}
+
+/// V7: heir whitelist entries disappear when the owner checks in.
+#[test]
+fn v7_heir_whitelist_revoked_on_check_in() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    heirs(&mut c, vec!["heir.testnet".parse().unwrap()], vec!["0xheir".into()]);
+    c.propose_set_inheritance_timeout(DAY);
+    c.apply_set_inheritance_timeout();
+    testing_env!(ctx.block_timestamp(2 * DAY).predecessor_account_id("heir.testnet".parse().unwrap()).build());
+    c.claim_inheritance();
+    assert!(c.is_whitelisted("eth".into(), "0xheir".into()));
+    testing_env!(ctx.block_timestamp(2 * DAY + 1).predecessor_account_id(oper()).build());
+    c.check_in();
+    assert!(!c.is_whitelisted("eth".into(), "0xheir".into()));
+}
+
+/// V8: delimiters are rejected, and apply uses the same values that formed
+/// the action key — the applied value can never differ from it.
+#[test]
+fn v8_delimiter_injection_rejected() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    addr(&mut ctx);
+    expect_panic(|| c.propose_whitelist_add("eth|0xevil".into(), "x".into()));
+    expect_panic(|| c.propose_whitelist_add("eth".into(), "0xevil|x".into()));
+    wl(&mut c, "eth", "0xabc");
+    assert!(c.is_whitelisted("eth".into(), "0xabc".into()));
 }

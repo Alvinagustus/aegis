@@ -46,29 +46,31 @@ echo "→ deploying contract code"
 near contract deploy "$CONTRACT" use-file "$WASM" without-init-call \
   network-config "$NETWORK" sign-with-keychain send
 
-# 3. initialise with you as operator
+# 3. initialise with you as operator (config is atomic at init: V1)
 echo "→ initializing (operator = $OPERATOR, threshold = $THRESHOLD)"
-near contract call-function as-transaction "$CONTRACT" new \
-  json-args "{\"operator\":\"$OPERATOR\",\"guard_threshold\":$THRESHOLD}" \
+INIT_ARGS="{\"operator\":\"$OPERATOR\",\"guard_threshold\":$THRESHOLD"
+if [[ -n "$GUARDIAN" ]]; then
+  if [[ "$THRESHOLD" -gt 1 ]]; then
+    echo "this script accepts one guardian; use threshold 1 and add the rest via propose/apply"
+    exit 1
+  fi
+  if [[ -n "$REVIEWER" ]]; then REVIEWER_JSON="\"$REVIEWER\""; else REVIEWER_JSON=null; fi
+  INIT_METHOD="new_configured"
+  INIT_ARGS="$INIT_ARGS,\"admin_delay\":86400000000000,\"reviewer\":$REVIEWER_JSON,\"guardians\":[\"$GUARDIAN\"],\"whitelist\":[]}"
+else
+  if [[ -n "$REVIEWER" ]]; then
+    echo "a reviewer needs a guardian at init (threshold >= 1): pass a guardian too"
+    exit 1
+  fi
+  INIT_METHOD="new"
+  INIT_ARGS="$INIT_ARGS}"
+fi
+near contract call-function as-transaction "$CONTRACT" "$INIT_METHOD" \
+  json-args "$INIT_ARGS" \
   prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' \
   sign-as "$OPERATOR" network-config "$NETWORK" sign-with-keychain send
 
-# 4. reviewer + guardian (optional)
-if [[ -n "$REVIEWER" ]]; then
-  echo "→ appointing reviewer $REVIEWER"
-  near contract call-function as-transaction "$CONTRACT" set_reviewer \
-    json-args "{\"reviewer\":\"$REVIEWER\"}" \
-    prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' \
-    sign-as "$OPERATOR" network-config "$NETWORK" sign-with-keychain send
-fi
-if [[ -n "$GUARDIAN" ]]; then
-  echo "→ adding guardian $GUARDIAN"
-  near contract call-function as-transaction "$CONTRACT" guardian_add \
-    json-args "{\"account\":\"$GUARDIAN\"}" \
-    prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR' \
-    sign-as "$OPERATOR" network-config "$NETWORK" sign-with-keychain send
-fi
-
 echo "✅ Aegis is live at $CONTRACT (operator: $OPERATOR)"
+echo "   Admin changes are timelocked 1 day: propose_* → apply_* (guardians can veto)."
 echo "   Next: open the dashboard, connect your wallet, switch to:"
 echo "   $CONTRACT"

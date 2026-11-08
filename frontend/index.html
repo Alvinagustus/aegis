@@ -188,6 +188,11 @@
           <p class="hint">Panic freezes all spending at once. Only the owner can unfreeze it, after the cooldown.</p>
         </section>
 
+        <section class="card c-12" aria-labelledby="h-pending">
+          <div class="card-head"><div><h2 id="h-pending">Pending admin changes</h2><p class="hint">Timelocked: guardians can veto, the owner applies after the delay.</p></div></div>
+          <div id="pending" class="holds"></div>
+        </section>
+
         <div id="action-out" class="out c-12"></div>
       </div>
 
@@ -227,6 +232,12 @@
           </label>
           <label>Guardian threshold
             <input name="threshold" value="1" inputmode="numeric" required />
+          </label>
+          <label>Guardian account (optional)
+            <input name="guardian" placeholder="guardian.yourname.testnet" autocomplete="off" />
+          </label>
+          <label>AI reviewer account (optional)
+            <input name="reviewer" placeholder="reviewer.yourname.testnet" autocomplete="off" />
           </label>
           <div class="form-action"><button class="btn btn-primary" type="submit">1. Create + deploy + init</button></div>
         </form>

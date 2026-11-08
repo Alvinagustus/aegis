@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as nearAPI from "near-api-js";
 
 const CONTRACT_ID_RE = /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
@@ -108,6 +109,7 @@ function parseVerdict(text) {
 export function intentHash(intent, nonce) {
   // Must match the contract's borsh tuple hash (N9):
   // sha256(borsh(chain, to, amount, memo_hash, nonce)), memo_hash = sha256(memo)
+  const memoHash = crypto.createHash("sha256").update(intent.memo || "").digest("hex");
   const fields = [intent.chain.toLowerCase(), intent.to.toLowerCase()];
   const buf = Buffer.concat([
     ...fields.map((f) => { const b = Buffer.from(f); const l = Buffer.alloc(4); l.writeUInt32LE(b.length); return Buffer.concat([l, b]); }),
@@ -139,41 +141,46 @@ async function submitOnChain({ intentHash, risk, denied, model }) {
   return result?.transaction?.hash ?? "ok";
 }
 
-const intentArg = process.argv[process.argv.length - 2] === "--submit" ? process.argv[process.argv.length - 1] : process.argv[process.argv.length - 1];
-const doSubmit = process.argv.includes("--submit");
-const intent = JSON.parse(intentArg);
+async function main() {
+  const intentArg = process.argv[process.argv.length - 2] === "--submit" ? process.argv[process.argv.length - 1] : process.argv[process.argv.length - 1];
+  const doSubmit = process.argv.includes("--submit");
+  const intent = JSON.parse(intentArg);
 
-loadEnv();
-const { model, text } = await askModelWithRetry(intent);
-const verdict = parseVerdict(text);
+  loadEnv();
+  const { model, text } = await askModelWithRetry(intent);
+  const verdict = parseVerdict(text);
 
-// The verdict key depends on the contract nonce (F3): fetch it from chain.
-let nonce = 0;
-if (process.env.WATCHDOG_CONTRACT && process.env.REVIEWER_ACCOUNT && process.env.REVIEWER_KEY) {
-  try {
-    const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
-    await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
-    const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://testnet-rpc.intea.rs" });
-    nonce = Number(await near.account(process.env.REVIEWER_ACCOUNT).viewFunction({ contractId: process.env.WATCHDOG_CONTRACT, methodName: "get_nonce", args: {} }));
-  } catch (e) {
-    console.error("could not read get_nonce (using 0):", e.message);
+  // The verdict key depends on the contract nonce (F3): fetch it from chain.
+  let nonce = 0;
+  if (process.env.WATCHDOG_CONTRACT && process.env.REVIEWER_ACCOUNT && process.env.REVIEWER_KEY) {
+    try {
+      const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
+      await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
+      const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://testnet-rpc.intea.rs" });
+      nonce = Number(await near.account(process.env.REVIEWER_ACCOUNT).viewFunction({ contractId: process.env.WATCHDOG_CONTRACT, methodName: "get_nonce", args: {} }));
+    } catch (e) {
+      console.error("could not read get_nonce (using 0):", e.message);
+    }
+  }
+  const ih = intentHash(intent, nonce);
+  const out = {
+    intent_hash: ih,
+    nonce,
+    chain: intent.chain,
+    to: intent.to,
+    amount: intent.amount,
+    risk: verdict.risk,
+    denied: verdict.denied,
+    reason: verdict.reason,
+    model,
+  };
+  console.log(JSON.stringify(out, null, 2));
+
+  if (doSubmit) {
+    const txHash = await submitOnChain({ intentHash: ih, risk: verdict.risk, denied: verdict.denied, model });
+    console.log(JSON.stringify({ on_chain: "submit_verdict", tx: txHash }, null, 2));
   }
 }
-const ih = intentHash(intent, nonce);
-const out = {
-  intent_hash: ih,
-  nonce,
-  chain: intent.chain,
-  to: intent.to,
-  amount: intent.amount,
-  risk: verdict.risk,
-  denied: verdict.denied,
-  reason: verdict.reason,
-  model,
-};
-console.log(JSON.stringify(out, null, 2));
 
-if (doSubmit) {
-  const txHash = await submitOnChain({ intentHash: ih, risk: verdict.risk, denied: verdict.denied, model });
-  console.log(JSON.stringify({ on_chain: "submit_verdict", tx: txHash }, null, 2));
-}
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) await main();

@@ -16,6 +16,8 @@
 //! owner can cancel any hold until it is executed.
 
 use near_sdk::json_types::U128;
+use near_sdk::serde::{de::DeserializeOwned, Serialize};
+use near_sdk::serde_json;
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{env, log, near, require, AccountId};
 use std::collections::HashMap;
@@ -23,6 +25,10 @@ use std::collections::HashMap;
 pub const ONE_DAY_NANO: u64 = 86_400_000_000_000;
 /// Mandatory cooldown before panic mode can be turned off.
 pub const PANIC_COOLDOWN_NANO: u64 = 3 * ONE_DAY_NANO;
+/// The admin timelock can never be configured below this floor (V1).
+pub const MIN_ADMIN_DELAY_NANO: u64 = 300_000_000_000; // 5 minutes
+/// ...and never above this ceiling, so a stolen key cannot lock admin forever.
+pub const MAX_ADMIN_DELAY_NANO: u64 = 30 * ONE_DAY_NANO;
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,8 +97,9 @@ pub struct AiVerdict {
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug)]
 pub struct Policy {
-    /// Spend cap per UTC day per chain, in that chain's own smallest unit
-    /// (wei for EVM chains, sats for BTC). See `limit_for`.
+    /// Spend cap per UTC day per *bucket*, in that chain's own smallest unit
+    /// (wei for EVM chains, sats for BTC). Every EVM label shares the `eth`
+    /// bucket; every unlisted label shares `other` (which starts at 0 = deny).
     pub daily_limits: HashMap<String, U128>,
     /// First-seen addresses are held for this long.
     pub quiet_period: u64,
@@ -101,7 +108,7 @@ pub struct Policy {
     /// A first-seen address can be re-evaluated without re-holding for this long.
     pub known_grace: u64,
     /// Mandatory cooldown before panic mode can be turned off.
-    /// Default 3 days; the operator may lower it — every change is on-chain.
+    /// Default 3 days; changes are timelocked (propose/apply).
     pub panic_cooldown: u64,
     /// AI verdicts expire this long after `reviewed_at` (ns). Default 10 min.
     pub verdict_ttl: u64,
@@ -111,14 +118,12 @@ pub struct Policy {
 pub const AI_DENY_THRESHOLD: u8 = 70;
 
 impl Policy {
-    /// Daily spend limit for a chain in that chain's own units.
-    /// Chains without an explicit limit fall back to the `eth` limit.
+    /// Daily spend limit for the bucket that owns `chain`. Chains without an
+    /// explicit bucket fall into `other`, whose default limit is 0 (deny).
     pub fn limit_for(&self, chain: &str) -> u128 {
-        let c = chain.to_lowercase();
         self.daily_limits
-            .get(&c)
+            .get(&chain_bucket(chain))
             .map(|l| l.0)
-            .or_else(|| self.daily_limits.get("eth").map(|l| l.0))
             .unwrap_or(0)
     }
 }
@@ -127,24 +132,57 @@ const EVM_CHAINS: &[&str] = &[
     "eth", "ethereum", "base", "arb", "arbitrum", "op", "optimism", "polygon", "matic", "bsc", "bnb", "avax", "zksync",
 ];
 
-/// Bucket a chain label into a shared spend counter. All EVM labels share
-/// ONE counter (N2): you cannot multiply the daily limit by relabeling.
+/// Bucket a chain label into a shared spend counter (N2/V4): all EVM labels
+/// share the `eth` counter, all Bitcoin aliases share `btc`, and every
+/// unlisted label shares `other` — so relabeling cannot multiply the limit.
 fn chain_bucket(chain: &str) -> String {
     let c = chain.to_lowercase();
     if EVM_CHAINS.contains(&c.as_str()) {
-        "evm".to_string()
+        "eth".to_string()
+    } else if c == "btc" || c == "bitcoin" {
+        "btc".to_string()
     } else {
-        c
+        "other".to_string()
     }
+}
+
+/// Labels and destinations are validated before they enter an action key or a
+/// payload (V8): no delimiters, whitespace, or control characters.
+fn valid_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn valid_address(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Payloads are JSON, not delimiter-joined strings (V8): a `|` or `,` inside a
+/// value can never change which value is applied after the timelock.
+fn pack<T: Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| env::panic_str("payload encode failed"))
+}
+
+fn unpack<T: DeserializeOwned>(payload: &str) -> T {
+    serde_json::from_str(payload).unwrap_or_else(|_| env::panic_str("bad payload"))
 }
 
 fn intent_hash_for(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: u64) -> String {
     // Length-prefixed borsh tuple (N9): no delimiter collisions.
     use near_sdk::borsh::BorshSerialize;
     let mut v = Vec::new();
-    (chain.to_lowercase(), to.to_lowercase(), amount, memo_hash.to_lowercase(), nonce)
-        .serialize(&mut v)
-        .unwrap();
+    BorshSerialize::serialize(
+        &(chain.to_lowercase(), to.to_lowercase(), amount, memo_hash.to_lowercase(), nonce),
+        &mut v,
+    )
+    .unwrap();
     env::sha256(&v)
         .iter()
         .map(|b| format!("{:02x}", b))
@@ -192,6 +230,9 @@ pub struct Watchdog {
     /// Guardian votes to veto pending admin actions (N3: counted per
     /// guardian — "action:account" — never twice by the same guardian).
     veto_votes: IterableMap<String, bool>,
+    /// Whitelist entries created by an open inheritance (V7). Removed on
+    /// check_in so heir access ends with the estate; owner entries stay.
+    heir_whitelisted: IterableMap<String, bool>,
     /// After panic_off, panic_on re-arms only after this (default 1 hour).
     last_panic_off: u64,
     // --- inheritance --------------------------------------------------
@@ -215,6 +256,46 @@ impl Default for Watchdog {
 impl Watchdog {
     #[init]
     pub fn new(operator: AccountId, guard_threshold: u32) -> Self {
+        Self::init_base(operator, guard_threshold)
+    }
+
+    /// One-shot bootstrap for production deployments: the initial reviewer,
+    /// guardians, whitelist, and admin delay are set atomically at init, so no
+    /// post-init setter is needed (V1). The delay is floored at 5 minutes and
+    /// can never be lowered instantly afterwards.
+    #[init]
+    pub fn new_configured(
+        operator: AccountId,
+        guard_threshold: u32,
+        admin_delay: u64,
+        reviewer: Option<AccountId>,
+        guardians: Vec<AccountId>,
+        whitelist: Vec<(String, String)>,
+    ) -> Self {
+        require!(admin_delay >= MIN_ADMIN_DELAY_NANO, "admin delay below minimum");
+        require!(admin_delay <= MAX_ADMIN_DELAY_NANO, "admin delay above maximum");
+        require!(
+            guardians.len() as u32 >= guard_threshold,
+            "threshold exceeds guardian count"
+        );
+        let mut s = Self::init_base(operator, guard_threshold);
+        s.admin_delay = admin_delay;
+        s.reviewer = reviewer;
+        for guardian in guardians {
+            s.guardian.insert(guardian, true);
+        }
+        for (chain, address) in whitelist {
+            require!(valid_label(&chain), "bad chain label");
+            require!(valid_address(&address), "bad address");
+            s.whitelisted.insert(
+                format!("{}:{}", chain.to_lowercase(), address.to_lowercase()),
+                env::block_timestamp(),
+            );
+        }
+        s
+    }
+
+    fn init_base(operator: AccountId, guard_threshold: u32) -> Self {
         require!(guard_threshold >= 1, "threshold must be >= 1");
         Self {
             operator,
@@ -251,6 +332,7 @@ impl Watchdog {
             heir_addresses: Vec::new(),
             heir_votes: IterableMap::new(b"hv".as_slice()),
             veto_votes: IterableMap::new(b"vv".as_slice()),
+            heir_whitelisted: IterableMap::new(b"hw".as_slice()),
             last_panic_off: 0,
             last_checkin: env::block_timestamp(),
             inheritance_timeout: 90 * ONE_DAY_NANO,
@@ -427,7 +509,16 @@ impl Watchdog {
         message: String,
     ) -> u64 {
         self.only_operator();
-        require!(release_at > env::block_timestamp(), "release_at must be future");
+        require!(valid_label(&chain), "bad chain label");
+        require!(valid_address(&to), "bad address");
+        let now = env::block_timestamp();
+        require!(release_at > now, "release_at must be future");
+        // V3: a sealed capsule may not open before the quiet period, so a
+        // stolen key cannot create+release one instantly to skip the hold.
+        require!(
+            release_at >= now.saturating_add(self.policy.quiet_period),
+            "capsule lock must be at least the quiet period"
+        );
         let id = self.next_hold_id;
         self.next_hold_id += 1;
         self.holds.insert(
@@ -436,7 +527,7 @@ impl Watchdog {
                 chain,
                 to: to.to_lowercase(),
                 amount,
-                requested_at: env::block_timestamp(),
+                requested_at: now,
                 status: HoldStatus::Pending,
                 escrow: Vec::new(),
                 capsule_release_at: release_at,
@@ -457,9 +548,13 @@ impl Watchdog {
         require!(!panicked, "panic mode");
         require!(env::block_timestamp() >= hold.capsule_release_at, "capsule still sealed");
         let key = format!("{}|{}|{}", hold.chain.to_lowercase(), hold.to, hold.amount.0);
+        let address_key = format!("{}:{}", hold.chain.to_lowercase(), hold.to);
         hold.status = HoldStatus::Released;
         // Released capsule = pre-approved entry consumed by evaluate_tx (F6).
         self.preapproved.insert(key, true);
+        // V3: the destination becomes known only after the sealed period has
+        // elapsed (same rule as a released hold), never at seal time.
+        self.seen.insert(address_key, env::block_timestamp());
         Self::event_hold("CAPSULE_RELEASED", id, 0);
     }
 
@@ -472,9 +567,23 @@ impl Watchdog {
 
     fn admin_propose(&mut self, action: &str, payload: String) {
         self.only_operator();
+        // A new proposal starts with zero vetoes (V2): stale votes can never
+        // be pre-loaded to veto a future proposal on its first call.
+        let prefix = format!("{}:", action);
+        let stale: Vec<String> = self
+            .veto_votes
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in stale {
+            self.veto_votes.remove(&k);
+        }
         self.admin_pending.insert(action.to_string(), env::block_timestamp());
-        self.admin_payload.insert(action.to_string(), payload);
-        Self::event("ADMIN_PROPOSED", "", action, 0);
+        self.admin_payload.insert(action.to_string(), payload.clone());
+        // V5: the payload is public, in the event and in get_admin_payload,
+        // so guardians can tell a harmless proposal from a malicious one.
+        Self::event("ADMIN_PROPOSED", action, &payload, 0);
     }
 
     fn admin_take(&mut self, action: &str) -> String {
@@ -502,6 +611,8 @@ impl Watchdog {
         // A guardian cannot veto their own removal proposal (N3).
         let own_removal = action.starts_with(&format!("guardian_remove:{}", env::predecessor_account_id()));
         require!(!own_removal, "cannot veto own removal");
+        // V2: votes only exist against a live proposal — no pre-loading.
+        require!(self.admin_pending.contains_key(&action), "no pending change");
         let caller = env::predecessor_account_id();
         let key = format!("{}:{}", action, caller);
         require!(!self.veto_votes.contains_key(&key), "already voted");
@@ -540,53 +651,100 @@ impl Watchdog {
         self.admin_pending.keys().cloned().collect()
     }
 
-    // -- universal timelock for ALL sensitive setters (N1) ----------------
-    /// `set_admin_delay` is the only instant setter left (it is the delay
-    /// itself); production default is 1 day, tests set it to 0.
+    /// V5: what a guardian is actually voting on. Payloads are JSON strings.
+    pub fn get_admin_payload(&self, action: String) -> Option<String> {
+        self.admin_payload.get(&action).cloned()
+    }
+
+    /// (action, payload, proposed_at) — the dashboard renders this panel.
+    pub fn get_admin_proposals(&self) -> Vec<(String, String, u64)> {
+        self.admin_pending
+            .keys()
+            .map(|action| {
+                (
+                    action.clone(),
+                    self.admin_payload.get(action).cloned().unwrap_or_default(),
+                    self.admin_pending.get(action).copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
+    pub fn get_admin_delay(&self) -> u64 {
+        self.admin_delay
+    }
+
+    // -- universal timelock for ALL sensitive setters (N1/V1) -------------
+    /// Instant ONLY upward. Lowering the delay must go through
+    /// `propose_admin_delay` + `apply_admin_delay`, and can never reach zero —
+    /// otherwise one stolen call would collapse every other timelock.
     pub fn set_admin_delay(&mut self, nanoseconds: u64) {
         self.only_operator();
+        require!(nanoseconds >= MIN_ADMIN_DELAY_NANO, "admin delay below minimum");
+        require!(nanoseconds <= MAX_ADMIN_DELAY_NANO, "admin delay above maximum");
+        require!(
+            nanoseconds >= self.admin_delay,
+            "decrease is timelocked: use propose_admin_delay + apply_admin_delay"
+        );
         self.admin_delay = nanoseconds;
         Self::event("ADMIN_DELAY_SET", "", "", nanoseconds as u128);
+    }
+
+    pub fn propose_admin_delay(&mut self, nanoseconds: u64) {
+        require!(nanoseconds >= MIN_ADMIN_DELAY_NANO, "admin delay below minimum");
+        require!(nanoseconds <= MAX_ADMIN_DELAY_NANO, "admin delay above maximum");
+        self.admin_propose("admin_delay", pack(&nanoseconds));
+    }
+
+    pub fn apply_admin_delay(&mut self) {
+        self.only_operator();
+        let v: u64 = unpack(&self.admin_take("admin_delay"));
+        require!(v >= MIN_ADMIN_DELAY_NANO, "admin delay below minimum");
+        require!(v <= MAX_ADMIN_DELAY_NANO, "admin delay above maximum");
+        self.admin_delay = v;
+        Self::event("ADMIN_DELAY_SET", "", "", v as u128);
     }
 
     // -- panic cooldown (min enforced, frozen while panic is on) ----------
     pub fn propose_panic_cooldown(&mut self, nanoseconds: u64) {
         require!(!self.panic, "panic is on");
         require!(nanoseconds >= Self::MIN_PANIC_COOLDOWN, "below minimum 5m");
-        self.admin_propose("panic_cooldown", nanoseconds.to_string());
+        self.admin_propose("panic_cooldown", pack(&nanoseconds));
     }
 
     pub fn apply_panic_cooldown(&mut self) {
         self.only_operator();
         require!(!self.panic, "panic is on");
-        let v = self.admin_take("panic_cooldown");
-        self.policy.panic_cooldown = v.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let v: u64 = unpack(&self.admin_take("panic_cooldown"));
+        self.policy.panic_cooldown = v;
         Self::event("PANIC_COOLDOWN_SET", "", "", self.policy.panic_cooldown as u128);
     }
 
     // -- daily limit: decreases direct, increases timelocked --------------
     pub fn set_daily_limit(&mut self, chain: String, limit: U128) {
         self.only_operator();
-        let current = self.policy.limit_for(&chain);
+        require!(valid_label(&chain), "bad chain label");
+        let bucket = chain_bucket(&chain);
+        let current = self.policy.daily_limits.get(&bucket).map(|l| l.0).unwrap_or(0);
         require!(limit.0 <= current, "increase requires timelock (propose_daily_limit)");
-        self.policy.daily_limits.insert(chain.to_lowercase(), limit);
+        self.policy.daily_limits.insert(bucket.clone(), limit);
+        Self::event("DAILY_LIMIT_SET", &chain, &bucket, limit.0);
     }
 
     pub fn propose_daily_limit(&mut self, chain: String, limit: U128) {
-        self.admin_propose(
-            &format!("daily_limit:{}", chain.to_lowercase()),
-            format!("{}|{}", chain.to_lowercase(), limit.0),
-        );
+        require!(valid_label(&chain), "bad chain label");
+        let bucket = chain_bucket(&chain);
+        let payload = pack(&(chain.to_lowercase(), bucket.clone(), limit.0));
+        self.admin_propose(&format!("daily_limit:{}", bucket), payload);
     }
 
     pub fn apply_daily_limit(&mut self, chain: String) {
         self.only_operator();
-        let payload = self.admin_take(&format!("daily_limit:{}", chain.to_lowercase()));
-        let mut iter = payload.split('|');
-        let ch: String = iter.next().unwrap_or_default().to_string();
-        let amt: u128 = iter.next().unwrap_or("0").parse().unwrap_or_else(|_| env::panic_str("bad payload"));
-        self.policy.daily_limits.insert(ch, U128(amt));
-        Self::event("DAILY_LIMIT_SET", &chain, "", amt);
+        let bucket = chain_bucket(&chain);
+        let payload = self.admin_take(&format!("daily_limit:{}", bucket));
+        let (_chain, applied_bucket, amount): (String, String, u128) = unpack(&payload);
+        self.policy.daily_limits.insert(applied_bucket, U128(amount));
+        Self::event("DAILY_LIMIT_SET", &chain, &bucket, amount);
     }
 
     // -- reviewer: appointing is direct, removing is timelocked -----------
@@ -609,6 +767,14 @@ impl Watchdog {
     pub fn apply_guardian_remove(&mut self, account: AccountId) {
         self.only_operator();
         self.admin_take(&format!("guardian_remove:{}", account));
+        // V6: never leave fewer guardians than the threshold, or holds could
+        // never clear and the estate could never open.
+        let remaining = self.guardian.len() as u32
+            - if self.guardian.contains_key(&account) { 1 } else { 0 };
+        require!(
+            remaining >= self.policy.guard_threshold,
+            "removal would drop guardians below threshold; lower the threshold first"
+        );
         self.guardian.remove(&account);
         Self::event("GUARDIAN_REMOVED", "", &account.to_string(), 0);
     }
@@ -633,13 +799,14 @@ impl Watchdog {
     /// first-seen rule, so shortening it must not be instant.
     pub fn propose_quiet_period_ns(&mut self, nanoseconds: u64) {
         require!(nanoseconds > 0, "must be > 0");
-        self.admin_propose("quiet_period_ns", nanoseconds.to_string());
+        self.admin_propose("quiet_period_ns", pack(&nanoseconds));
     }
 
     pub fn apply_quiet_period_ns(&mut self) {
         self.only_operator();
-        let v = self.admin_take("quiet_period_ns");
-        self.policy.quiet_period = v.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let v: u64 = unpack(&self.admin_take("quiet_period_ns"));
+        require!(v > 0, "must be > 0");
+        self.policy.quiet_period = v;
         Self::event("QUIET_PERIOD_SET", "", "", self.policy.quiet_period as u128);
     }
 
@@ -657,25 +824,30 @@ impl Watchdog {
     }
 
     pub fn propose_whitelist_add(&mut self, chain: String, address: String) {
-        self.admin_propose(
-            &format!("whitelist_add:{}:{}", chain.to_lowercase(), address.to_lowercase()),
-            format!("{}|{}", chain.to_lowercase(), address.to_lowercase()),
-        );
+        require!(valid_label(&chain), "bad chain label");
+        require!(valid_address(&address), "bad address");
+        let c = chain.to_lowercase();
+        let a = address.to_lowercase();
+        self.admin_propose(&format!("whitelist_add:{}:{}", c, a), pack(&(c, a)));
     }
 
     pub fn apply_whitelist_add(&mut self, chain: String, address: String) {
         self.only_operator();
-        let key = format!("whitelist_add:{}:{}", chain.to_lowercase(), address.to_lowercase());
-        let payload = self.admin_take(&key);
-        let mut iter = payload.split('|');
-        let ch = iter.next().unwrap_or(&chain).to_string();
-        let ad = iter.next().unwrap_or(&address).to_string();
-        self.whitelisted.insert(format!("{}:{}", ch, ad), env::block_timestamp());
-        Self::event("WHITELIST_ADDED", &chain, &address.to_lowercase(), 0);
+        require!(valid_label(&chain), "bad chain label");
+        require!(valid_address(&address), "bad address");
+        let c = chain.to_lowercase();
+        let a = address.to_lowercase();
+        // V8: the applied value comes from the call arguments (which are also
+        // the action key) — never from splitting a delimiter-joined payload.
+        self.admin_take(&format!("whitelist_add:{}:{}", c, a));
+        self.whitelisted.insert(format!("{}:{}", c, a), env::block_timestamp());
+        Self::event("WHITELIST_ADDED", &c, &a, 0);
     }
 
     pub fn whitelist_remove(&mut self, chain: String, address: String) {
         self.only_operator();
+        require!(valid_label(&chain), "bad chain label");
+        require!(valid_address(&address), "bad address");
         self.whitelisted.remove(&format!("{}:{}", chain.to_lowercase(), address.to_lowercase()));
     }
 
@@ -715,6 +887,13 @@ impl Watchdog {
         self.last_checkin = env::block_timestamp();
         self.inheritance_open = false;
         self.heir_votes.clear();
+        // V7: revoke only the whitelist entries the estate granted, never the
+        // owner's own entries (F10).
+        let granted: Vec<String> = self.heir_whitelisted.keys().cloned().collect();
+        for key in granted {
+            self.whitelisted.remove(&key);
+            self.heir_whitelisted.remove(&key);
+        }
         Self::event("CHECK_IN", "", "", 0);
     }
 
@@ -728,24 +907,17 @@ impl Watchdog {
 
     pub fn propose_set_heirs(&mut self, accounts: Vec<AccountId>, addresses: Vec<String>) {
         require!(!accounts.is_empty() || !addresses.is_empty(), "at least one heir");
-        let payload = format!("{}|{}", accounts.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(","), addresses.iter().map(|a| a.to_lowercase()).collect::<Vec<_>>().join(","));
+        for address in &addresses {
+            require!(valid_address(address), "bad heir address");
+        }
+        let payload = pack(&(accounts, addresses));
         self.admin_propose("set_heirs", payload);
     }
 
     pub fn apply_set_heirs(&mut self) {
         self.only_operator();
         let payload = self.admin_take("set_heirs");
-        let mut iter = payload.split('|');
-        let accs: Vec<AccountId> = iter
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.split(',').filter_map(|a| a.parse().ok()).collect())
-            .unwrap_or_default();
-        let addrs: Vec<String> = iter
-            .next()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.split(',').map(|a| a.to_string()).collect())
-            .unwrap_or_default();
+        let (accs, addrs): (Vec<AccountId>, Vec<String>) = unpack(&payload);
         self.heir_accounts = accs.clone();
         self.heir_addresses = addrs;
         Self::event("HEIRS_SET", "", "", (self.heir_accounts.len() + self.heir_addresses.len()) as u128);
@@ -753,13 +925,14 @@ impl Watchdog {
 
     pub fn propose_set_inheritance_timeout(&mut self, nanoseconds: u64) {
         require!(nanoseconds > 0, "timeout must be > 0");
-        self.admin_propose("set_inheritance_timeout", nanoseconds.to_string());
+        self.admin_propose("set_inheritance_timeout", pack(&nanoseconds));
     }
 
     pub fn apply_set_inheritance_timeout(&mut self) {
         self.only_operator();
-        let v = self.admin_take("set_inheritance_timeout");
-        self.inheritance_timeout = v.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let v: u64 = unpack(&self.admin_take("set_inheritance_timeout"));
+        require!(v > 0, "timeout must be > 0");
+        self.inheritance_timeout = v;
         Self::event("INHERITANCE_TIMEOUT_SET", "", "", self.inheritance_timeout as u128);
     }
 
@@ -787,7 +960,13 @@ impl Watchdog {
         }
         self.inheritance_open = true;
         for heir in self.heir_addresses.clone() {
-            self.whitelisted.insert(format!("eth:{}", heir), now);
+            let key = format!("eth:{}", heir);
+            // Track only entries this estate granted; if the owner already
+            // whitelisted the address, leave it untouched on check_in (F10).
+            if !self.whitelisted.contains_key(&key) {
+                self.whitelisted.insert(key.clone(), now);
+                self.heir_whitelisted.insert(key, true);
+            }
         }
         self.heir_votes.clear();
         Self::event("INHERITANCE_OPEN", "", "", self.heir_addresses.len() as u128);
@@ -802,17 +981,17 @@ impl Watchdog {
     }
 
     pub fn propose_add_employee(&mut self, address: String, salary: U128) {
+        require!(valid_address(&address), "bad address");
         let key = format!("add_employee:{}", address.to_lowercase());
-        self.admin_propose(&key, format!("{}|{}", address.to_lowercase(), salary.0));
+        self.admin_propose(&key, pack(&(address.to_lowercase(), salary.0)));
     }
 
     pub fn apply_add_employee(&mut self, address: String) {
         self.only_operator();
+        require!(valid_address(&address), "bad address");
         let key = format!("add_employee:{}", address.to_lowercase());
         let payload = self.admin_take(&key);
-        let mut iter = payload.split('|');
-        let addr = iter.next().unwrap_or(&address).to_string();
-        let sal: u128 = iter.next().unwrap_or("0").parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let (addr, sal): (String, u128) = unpack(&payload);
         self.employees.insert(
             addr.clone(),
             Employee {
@@ -826,6 +1005,8 @@ impl Watchdog {
 
     pub fn remove_employee(&mut self, chain: String, address: String) {
         self.only_operator();
+        require!(valid_label(&chain), "bad chain label");
+        require!(valid_address(&address), "bad address");
         let addr = address.to_lowercase();
         let chain = chain.to_lowercase();
         self.employees.remove(&addr);
@@ -879,37 +1060,40 @@ impl Watchdog {
     }
 
     pub fn propose_reviewer(&mut self, reviewer: AccountId) {
-        self.admin_propose("reviewer", reviewer.to_string());
+        self.admin_propose("reviewer", pack(&reviewer.to_string()));
     }
 
     pub fn apply_reviewer(&mut self) {
         self.only_operator();
         let payload = self.admin_take("reviewer");
-        let account: AccountId = payload.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let account: AccountId = unpack::<String>(&payload)
+            .parse()
+            .unwrap_or_else(|_| env::panic_str("bad payload"));
         self.reviewer = Some(account);
         Self::event("REVIEWER_SET", "", "", 0);
     }
 
     pub fn propose_ai_deny_threshold(&mut self, threshold: u8) {
         require!(threshold > 0 && threshold <= 100, "threshold 1..=100");
-        self.admin_propose("ai_deny_threshold", threshold.to_string());
+        self.admin_propose("ai_deny_threshold", pack(&threshold));
     }
 
     pub fn apply_ai_deny_threshold(&mut self) {
         self.only_operator();
-        let v = self.admin_take("ai_deny_threshold");
-        self.ai_deny_threshold = v.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let v: u8 = unpack(&self.admin_take("ai_deny_threshold"));
+        require!(v > 0 && v <= 100, "threshold 1..=100");
+        self.ai_deny_threshold = v;
     }
 
     pub fn propose_guard_threshold(&mut self, threshold: u32) {
         require!(threshold >= 1, "threshold must be >= 1");
-        self.admin_propose("guard_threshold", threshold.to_string());
+        self.admin_propose("guard_threshold", pack(&threshold));
     }
 
     pub fn apply_guard_threshold(&mut self) {
         self.only_operator();
-        let v = self.admin_take("guard_threshold");
-        let t: u32 = v.parse().unwrap_or_else(|_| env::panic_str("bad payload"));
+        let t: u32 = unpack(&self.admin_take("guard_threshold"));
+        require!(t >= 1, "threshold must be >= 1");
         require!(t <= self.guardian.len() as u32, "threshold exceeds guardian count");
         self.policy.guard_threshold = t;
         Self::event("GUARD_THRESHOLD_SET", "", "", t as u128);
@@ -919,14 +1103,38 @@ impl Watchdog {
         env::panic_str("timelocked: use propose_ai_deny_threshold + apply_ai_deny_threshold");
     }
 
-    pub fn set_known_grace(&mut self, nanoseconds: u64) {
-        self.only_operator();
-        self.policy.known_grace = nanoseconds;
+    /// known_grace and verdict_ttl are also timelocked (V1): increasing them
+    /// instantly would let a stolen key re-arm an old address or verdict.
+    pub fn set_known_grace(&mut self, _nanoseconds: u64) {
+        env::panic_str("timelocked: use propose_known_grace + apply_known_grace");
     }
 
-    pub fn set_verdict_ttl(&mut self, nanoseconds: u64) {
+    pub fn propose_known_grace(&mut self, nanoseconds: u64) {
+        self.admin_propose("known_grace", pack(&nanoseconds));
+    }
+
+    pub fn apply_known_grace(&mut self) {
         self.only_operator();
-        self.policy.verdict_ttl = nanoseconds;
+        let v: u64 = unpack(&self.admin_take("known_grace"));
+        self.policy.known_grace = v;
+        Self::event("KNOWN_GRACE_SET", "", "", v as u128);
+    }
+
+    pub fn set_verdict_ttl(&mut self, _nanoseconds: u64) {
+        env::panic_str("timelocked: use propose_verdict_ttl + apply_verdict_ttl");
+    }
+
+    pub fn propose_verdict_ttl(&mut self, nanoseconds: u64) {
+        require!(nanoseconds > 0, "ttl must be > 0");
+        self.admin_propose("verdict_ttl", pack(&nanoseconds));
+    }
+
+    pub fn apply_verdict_ttl(&mut self) {
+        self.only_operator();
+        let v: u64 = unpack(&self.admin_take("verdict_ttl"));
+        require!(v > 0, "ttl must be > 0");
+        self.policy.verdict_ttl = v;
+        Self::event("VERDICT_TTL_SET", "", "", v as u128);
     }
 
     /// Record a risk verdict for an intent hash (e.g. keccak256 of the tx).

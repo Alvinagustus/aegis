@@ -14,25 +14,27 @@ inheritance, and payroll** — one shield, four uses.
 ## Deployment (NEAR testnet)
 
 Deployed 2026-11-05 — see [`docs/deploy.md`](docs/deploy.md) for the full runbook.
-The current deployment is **v4** (`watchdog-v4-4d8a7f.testnet`); v1/v2/v3 are
+The current deployment is **v5** (`watchdog-v5-4d8a7f.testnet`); v1–v4 are
 kept as historical proof and left untouched.
 
 | Role | Account |
 |---|---|
-| Contract v4 (current) | `watchdog-v4-4d8a7f.testnet` |
+| Contract v5 (current) | `watchdog-v5-4d8a7f.testnet` |
 | Operator (wallet) | `watchdog-wallet-4d8a7f.testnet` |
 | AI reviewer | `watchdog-reviewer-4d8a7f.testnet` |
 | Guardian | `watchdog-guardian-4d8a7f.testnet` |
 | Guardian #2 | `watchdog-guardian2-4d8a7f.testnet` |
-| Test contract (panic flow, 60 s cooldown) | `watchdog-test-4d8a7f.testnet` |
+| Test contract (legacy panic cycle) | `watchdog-test-4d8a7f.testnet` |
 
-Explorer: https://explorer.testnet.near.org/accounts/watchdog-v4-4d8a7f.testnet
+Explorer: https://explorer.testnet.near.org/accounts/watchdog-v5-4d8a7f.testnet
 
 > Note: contract state is borsh-serialized and layout-bound. Each major code
-> version was deployed to a fresh account (v1 → v2 → v3 → v4) instead of an
-> in-place upgrade; a state migration would be needed for in-place upgrades.
+> version was deployed to a fresh account (v1 → v2 → v3 → v4 → v5) instead of
+> an in-place upgrade; a state migration would be needed for in-place upgrades.
+> v5 is initialized atomically with `new_configured` and a **1-day admin
+> timelock** — configuration is no longer written through an instant setter.
 
-Verified live on testnet (v1–v3; the same flows are re-verified on v4 by the
+Verified live on testnet (v1–v4; the same flows are re-verified on v5 by the
 red-team benchmark, 18/18):
 - unknown address → `Hold` (hold #1 pending on-chain)
 - benign intent, AI risk 10, whitelisted → `Approve`
@@ -42,14 +44,16 @@ red-team benchmark, 18/18):
 ### Test contract (panic flow)
 
 The panic cooldown is timelocked with a 5-minute minimum (`propose_panic_cooldown`
-→ `apply_panic_cooldown`, default 3 days). On the **test contract** the
-minimum is verified end-to-end:
+→ `apply_panic_cooldown`, default 3 days). `watchdog-test-4d8a7f.testnet` is a
+**legacy** contract kept only for the fast panic cycle — it predates the 5-minute
+floor (60 s cooldown), so the benchmark uses it there:
 
-- Contract: `watchdog-test-4d8a7f.testnet` (cooldown 60 s)
+- Contract: `watchdog-test-4d8a7f.testnet` (legacy 60 s cooldown)
 - Verified: guardian `panic_on` → `is_panicked = true` → owner `panic_off`
   immediately rejected ("cooldown still running") → after 65 s `panic_off`
   succeeds → `is_panicked = false`.
-- The production contract keeps the default 3-day cooldown.
+- The production contract (v5) enforces the 5-minute minimum and keeps the
+  default 3-day cooldown.
 
 ### Three usage patterns on the same engine (verified on `watchdog-v2-4d8a7f.testnet`, kept working on v3)
 
@@ -104,18 +108,18 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 
 1. **Read the rules (no setup, no key, no wallet):**
    ```sh
-   near view watchdog-v3-4d8a7f.testnet get_policy '{}' --networkId testnet
+   near view watchdog-v5-4d8a7f.testnet get_policy '{}' --networkId testnet
    # → daily_limits, quiet_period, guard_threshold, panic_cooldown: live answers
    ```
    Or open the dashboard: `cd frontend && npm install --legacy-peer-deps && npm run dev`.
 2. **Reproduce a decision (verdicts already on-chain — no API key needed):**
    ```sh
-   near view watchdog-v3-4d8a7f.testnet get_nonce '{}' --networkId testnet
+   near view watchdog-v5-4d8a7f.testnet get_nonce '{}' --networkId testnet
    # → e.g. 1
-   near view watchdog-v3-4d8a7f.testnet compute_intent_hash \
+   near view watchdog-v5-4d8a7f.testnet compute_intent_hash \
      '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"0","memo_hash":"<sha256hex of memo>","nonce":1}' \
      --networkId testnet
-   near view watchdog-v3-4d8a7f.testnet simulate_tx \
+   near view watchdog-v5-4d8a7f.testnet simulate_tx \
      '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"0","memo_hash":"<sha256hex>","nonce":1}' \
      --networkId testnet
    ```
@@ -178,12 +182,15 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 > fully compromised operator acting outside the script. The production
 > fix — the contract itself calling MPC `sign` — is on the roadmap.
 
-- **Hostile/gone guardian**: panic can only be unfrozen by the owner after the cooldown (default 3 days; owner-configurable on-chain, e.g. 60 s on the test contract) — a hostile guardian cannot brick the wallet forever, and a hostile owner cannot instantly dismiss the guardian's alarm. But a panicked guardian can delay user's spending for the duration of the cooldown — a deliberate trade-off: safety > convenience.
-- **Guardian vetoes are per-guardian, threshold-gated, and reset when the action ends.** A single guardian cannot reach the threshold alone (double-voting is rejected), cannot veto their own removal, and votes are cleared when the underlying change is applied or vetoed — so re-proposals start from zero. A hostile minority guardian can still delay (not block) changes.
-- **Stolen operator key**: attacker still need pass through the daily limit and the hold. They **cannot** reset the rules — `mode panic` runs and the damage is cut short.
-- **All guardians also get compromised**: currently the demo has an owner-managed guardians — this limitation is disclosed, the production version should use guardian self-enrolment / DAO.
-- **AI reviewer account itself becomes compromised**: verdicts are the strongest gate, so a malicious reviewer could blanket-deny everything and DoS the wallet — or score everything 0. Design response: verdicts are overwritable (latest wins, fully visible), only the operator can *replace* the reviewer, and the AI gate can be turned off by the owner. A production version would accept verdicts from several independent scorers.
-- **Operator self-review**: in this demo the operator appoints the reviewer, so a fully malicious operator could appoint itself and self-approve. Disclosed limitation: the guardrails that matter against a stolen operator (daily limit, near-seen holds, guardian panic) stay intact regardless of who the reviewer is.
+- **Hostile/gone guardian**: panic can only be unfrozen by the owner after the cooldown (default 3 days; changes are timelocked and floored at 5 minutes) — a hostile guardian cannot brick the wallet forever, and a hostile owner cannot instantly dismiss the guardian's alarm. But a panicked guardian can delay user's spending for the duration of the cooldown — a deliberate trade-off: safety > convenience.
+- **Guardian vetoes are per-guardian, threshold-gated, and reset when the action ends.** A single guardian cannot reach the threshold alone (double-voting is rejected), votes only count against a live proposal, cannot veto their own removal, and votes are cleared when the underlying change is applied or vetoed — so re-proposals start from zero. A hostile minority guardian can still delay (not block) changes.
+- **The admin timelock cannot be zeroed (V1).** Every sensitive setter is `propose_*` → `apply_*`. The delay is 1 day by default and can only be *increased* instantly; lowering it is itself timelocked and can never go below 5 minutes. v5 is initialized atomically with `new_configured`, so its live delay is 1 day — there is no instant "set delay to 0 for the demo" path anymore.
+- **Stolen operator key**: the attacker cannot reset the rules — the delay cannot be zeroed, and proposed reviewer/whitelist/guardian changes sit in the timelock where guardians can veto them. Any transfer it attempts still passes the AI gate, daily limit, and first-seen hold (panic can cut the damage short). It can, however, call MPC directly outside the cooperating script — see the trust model above.
+- **All guardians also get compromised**: currently the demo has owner-managed guardians — this limitation is disclosed, the production version should use guardian self-enrolment / DAO. A removal that would drop the guardian count below the threshold is rejected (V6).
+- **AI reviewer account itself becomes compromised**: verdicts are the strongest gate, so a malicious reviewer could blanket-deny everything and DoS the wallet — or score everything 0. Design response: verdicts are overwritable (latest wins, fully visible), only the operator can *replace* the reviewer, and that replacement is timelocked with a guardian veto. A production version would accept verdicts from several independent scorers.
+- **Operator self-review**: in this demo the operator appoints the reviewer, so a fully malicious operator from genesis could appoint itself and self-approve. Disclosed limitation: appointing a replacement reviewer is timelocked (guardians can veto), and the guardrails that matter against a stolen operator (delay floor, daily limit, first-seen holds, guardian panic) stay intact regardless of who the reviewer is.
+- **Time capsules cannot skip the quiet period (V3)**: a capsule's `release_at` must be at least one quiet period in the future, and the destination becomes known only when it actually releases — a stolen key cannot seal-and-release instantly to a never-seen address.
+- **Unknown chain labels are denied by default (V4)**: all EVM labels share the `eth` daily bucket, all Bitcoin aliases share `btc`, and every other label shares `other` (limit 0 until configured). Relabeling cannot multiply the limit.
 - **Payroll bypasses the AI gate by design**: employees are pre-registered by the owner (like a whitelist), so their payments consume the daily limit but are not individually AI-scored. If you need per-payment scoring for payroll, register each payment through `evaluate_tx` instead — that is the real tradeoff, and it is explicit in the code (`run_payroll`).
 - **Failed evaluation**: decision only lives at *signing time*; after a transfer is approved and signed, nothing "pulled back" — therefore, quiet period + daily limit stands before signing happens.
 
