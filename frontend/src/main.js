@@ -519,7 +519,7 @@ function markStep(n) {
 }
 markStep(1);
 
-$("transfer").addEventListener("submit", async (e) => {
+$("transfer-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const chain = fd.get("chain").trim();
