@@ -384,7 +384,16 @@ function renderEmpty() {
   $("shield-sub").textContent = me ? "Deploy your own Aegis contract to see its guardrails." : "Connect a wallet to inspect or deploy your own policy.";
   $("health").innerHTML = "";
   $("stats").innerHTML = [statTile("Panic mode", "—"), statTile("Daily limit", "—"), statTile("Guardians", "—"), statTile("Sepolia balance", "—")].join("");
-  for (const id of ["accounts", "policy", "verdicts", "inheritance", "payroll", "chainsig"]) $(id).innerHTML = `<tr><td>${p}</td></tr>`;
+  if (me) {
+    const myList = getMyDeploys(me);
+    const accountRows = [row("connected wallet", acct(me))];
+    if (myList.length) accountRows.push(row("your contracts", myList.map((c) => `<a href="#" data-switch-contract="${esc(c)}">${esc(c)}</a>`).join("<br>")));
+    accountRows.push(row("active contract", `<span class="muted">${esc(msg)}</span>`));
+    $("accounts").innerHTML = accountRows.join("");
+  } else {
+    $("accounts").innerHTML = `<tr><td>${p}</td></tr>`;
+  }
+  for (const id of ["policy", "verdicts", "inheritance", "payroll", "chainsig"]) $(id).innerHTML = `<tr><td>${p}</td></tr>`;
   for (const id of ["holds", "pending"]) $(id).innerHTML = p;
   $("verdict-out").innerHTML = "";
   $("transfer-out").innerHTML = "";
