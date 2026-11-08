@@ -55,6 +55,6 @@ export function createDemo({ healthy = false } = {}) {
   return {
     viewC, wallet, me, operator,
     ethBalance: 190000000000000000n,
-    ethAddress: "0xCB1B70ed9BD60FB269A6067aadf41830EcB86c9B",
+    ethAddress: "0x000000000000000000000000000000000000dEaD",
   };
 }

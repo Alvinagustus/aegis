@@ -39,11 +39,11 @@
     <!-- ───────── Hero: shield status ───────── -->
     <section class="hero" id="top">
       <div class="hero-copy">
-        <p class="eyebrow">Live policy window · read by anyone</p>
+        <p class="eyebrow">Connect a wallet · inspect or deploy your own policy</p>
         <h1>A deadbolt for<br />cross-chain spending.</h1>
         <p class="lead">
           Every transfer replays through an on-chain policy and an AI risk review before it can be signed.
-          This page reads the rules straight from the contract — there is no hidden admin API.
+          Connect your own NEAR testnet wallet and this page reads the rules straight from your contract — there is no hidden admin API.
         </p>
         <div class="active-line">
           <span class="muted">Active contract</span>
@@ -81,7 +81,7 @@
         </section>
 
         <section class="card c-7" aria-labelledby="h-policy">
-          <div class="card-head"><h2 id="h-policy">Policy</h2><span class="hint">live from the contract</span></div>
+          <div class="card-head"><h2 id="h-policy">Policy</h2><span class="hint">live from your contract</span></div>
           <table id="policy" class="kv"></table>
         </section>
 
@@ -262,7 +262,7 @@
 
       <!-- ───────── Proof ───────── -->
       <section class="card" id="proof" aria-labelledby="h-proof">
-        <div class="card-head"><div><h2 id="h-proof">Recorded guarded transfer</h2><p class="hint">A proven run on the demo deployment.</p></div></div>
+        <div class="card-head"><div><h2 id="h-proof">Recorded guarded transfer</h2><p class="hint">Reference run by the Aegis author on the author's own deployment — not your wallet.</p></div></div>
         <ol class="timeline">
           <li><b>AI review</b><span>0.001 ETH intent scored <b>risk 5</b>, attested with <code>submit_verdict</code>.</span></li>
           <li><b>Policy</b><span><code>simulate_tx</code> → <b>Approve</b> (whitelisted, within the daily limit).</span></li>

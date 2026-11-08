@@ -24,7 +24,6 @@ const nearAction = (methodName, args, gas = 50_000_000_000_000n, deposit = 0n) =
 // ───────────────── constants ─────────────────
 const params = new URLSearchParams(location.search);
 const DEMO = params.has("demo");
-const DEFAULT_CONTRACT = "aegispolicy.testnet"; // current audited deployment, switchable in Setup
 const MPC = "v1.signer-prod.testnet";
 const ETH_PATH = "ethereum-1";
 const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com";
@@ -34,8 +33,6 @@ const STORAGE_BYTE_COST = 10n ** 19n; // yoctoNEAR per stored byte
 const HOLD_SCAN_LIMIT = 15;
 const ADMIN_DAY_NS = "86400000000000"; // 1 day, the production admin timelock
 
-// Fallback so the demo deployment still shows an address if chainsig.js cannot load.
-const KNOWN_ETH = { "watchdog-wallet-4d8a7f.testnet": "0xCB1B70ed9BD60FB269A6067aadf41830EcB86c9B" };
 
 // ───────────────── helpers ─────────────────
 const $ = (id) => document.getElementById(id);
@@ -54,6 +51,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } },
 };
 
+const activeKey = (acc) => `AEGIS_CONTRACT_${acc}`;
 function myDeploysKey(acc) { return `AEGIS_MY_DEPLOY_${acc}`; }
 function getMyDeploys(acc) {
   if (!acc) return [];
@@ -109,8 +107,10 @@ async function sha256hex(s) {
 }
 
 // ───────────────── state ─────────────────
-let ACTIVE = DEMO ? "aegis-demo.testnet" : store.get("AEGIS_CONTRACT") || DEFAULT_CONTRACT;
-if (!ACCOUNT_RE.test(ACTIVE)) ACTIVE = DEFAULT_CONTRACT;
+// Nothing is shown until a wallet connects: no default contract, no author accounts.
+// The active contract is remembered per connected account, never globally.
+let ACTIVE = DEMO ? "aegis-demo.testnet" : null;
+let lastAccount = null;
 let selector = null;
 let wallet = null;
 let modal = null;
@@ -132,14 +132,13 @@ async function initView() {
   }
   eth = createPublicClient({ chain: sepolia, transport: http(SEPOLIA_RPC) });
   const near = await connect({ networkId: "testnet", keyStore: new keyStores.InMemoryKeyStore(), nodeUrl: NODE_URL });
-  const account = await near.account(ACTIVE);
-  window.__nearAccount = account;
+  window.__nearAccount = await near.account(MPC); // only the caller identity for view calls
   makeView();
 }
 const VIEW_METHODS = ["get_operator", "get_policy", "get_reviewer", "get_guardians", "is_panicked", "get_ai_verdict", "get_hold", "simulate_tx", "is_whitelisted", "get_nonce", "compute_intent_hash", "get_last_checkin", "get_heirs", "is_inheritance_open", "get_employees", "get_payroll_runs", "get_admin_proposals", "get_admin_delay"];
 function makeView() {
   if (DEMO) return;
-  viewC = new Contract(window.__nearAccount, ACTIVE, { viewMethods: VIEW_METHODS, changeMethods: [] });
+  viewC = ACTIVE && window.__nearAccount ? new Contract(window.__nearAccount, ACTIVE, { viewMethods: VIEW_METHODS, changeMethods: [] }) : null;
 }
 
 async function deriveEthAddress(operator) {
@@ -154,7 +153,7 @@ async function deriveEthAddress(operator) {
     ({ address } = await Evm.deriveAddressAndPublicKey(operator, ETH_PATH));
   } catch (err) {
     console.warn("chainsig derive failed", err);
-    address = KNOWN_ETH[operator] ?? null;
+    address = null;
   }
   ethCache.set(operator, address);
   return address;
@@ -203,12 +202,26 @@ function applyRoles() {
   }
 }
 
+function resolveActive() {
+  if (DEMO) return;
+  const me = connectedAccount();
+  if (!me) { ACTIVE = null; return; }
+  const saved = store.get(activeKey(me));
+  const mine = getMyDeploys(me);
+  ACTIVE = (saved && ACCOUNT_RE.test(saved) && saved) || mine[0] || null;
+}
+
 async function syncWallet() {
   if (DEMO) wallet = demo.wallet;
   else if (selector?.isSignedIn()) wallet = await selector.wallet().catch(() => null);
   else wallet = null;
+  const me = connectedAccount();
+  const changed = me !== lastAccount;
+  lastAccount = me;
+  if (changed) { resolveActive(); makeView(); currentIntent = null; }
   renderWho();
   applyRoles();
+  if (changed) load().catch(console.error);
 }
 
 async function initWallet() {
@@ -222,7 +235,7 @@ async function initWallet() {
     // MyNearWallet and Nightly sign with a full-access key, so in-app deploy works.
     modules: [setupMyNearWallet({ walletUrl: "https://testnet.mynearwallet.com" }), setupNightly(), setupMeteorWallet()],
   });
-  modal = setupModal(selector, { contractId: ACTIVE });
+  modal = setupModal(selector, { contractId: ACTIVE || undefined });
   $("connect").addEventListener("click", async () => {
     if (selector.isSignedIn()) {
       $("connect").disabled = true;
@@ -242,6 +255,7 @@ async function initWallet() {
 
 async function callContract(method, args, deposit = "0", contractId = ACTIVE, gas = 50_000_000_000_000n) {
   if (!wallet) throw new Error("Connect a NEAR wallet first (top-right button).");
+  if (!contractId) throw new Error("No active contract — deploy one in Setup or switch to an existing one.");
   const signerId = connectedAccount();
   if (!signerId) throw new Error("Wallet reports no signed-in account — reconnect.");
   return wallet.signAndSendTransaction({
@@ -327,9 +341,29 @@ function renderShield(checks) {
 }
 
 // ───────────────── dashboard render ─────────────────
+function renderEmpty() {
+  const me = connectedAccount();
+  const msg = me
+    ? `No Aegis contract selected for ${esc(me)}. Deploy one in Setup below, or switch to an existing contract.`
+    : "Connect a NEAR wallet to see your Aegis contract.";
+  const p = `<p class="empty">${msg}</p>`;
+  Object.assign(S, { operator: null, guardians: [], policy: null, reviewer: null, panicked: false, ethAddress: null });
+  const shield = $("shield");
+  shield.dataset.state = "idle";
+  $("shield-title").textContent = me ? "No contract yet" : "Not connected";
+  $("shield-sub").textContent = me ? "Deploy your own Aegis contract to see its guardrails." : "Connect a wallet to inspect or deploy your own policy.";
+  $("health").innerHTML = "";
+  $("stats").innerHTML = [statTile("Panic mode", "—"), statTile("Daily limit", "—"), statTile("Guardians", "—"), statTile("Sepolia balance", "—")].join("");
+  for (const id of ["accounts", "policy", "verdicts", "inheritance", "payroll", "chainsig"]) $(id).innerHTML = `<tr><td>${p}</td></tr>`;
+  for (const id of ["holds", "pending"]) $(id).innerHTML = p;
+  $("verdict-out").innerHTML = "";
+  $("transfer-out").innerHTML = "";
+}
+
 async function load() {
-  $("active-contract").textContent = ACTIVE;
-  if (!viewC) return;
+  $("active-contract").textContent = ACTIVE || "—";
+  if (!viewC) return renderEmpty();
+  const me0 = connectedAccount();
   const [operator, policy, reviewer, guardians, panicked] = await Promise.all([
     safe(() => viewC.get_operator()),
     safe(() => viewC.get_policy()),
@@ -341,7 +375,8 @@ async function load() {
   renderWho();
   applyRoles();
 
-  const ethAddress = await deriveEthAddress(operator);
+  // Derived address belongs to the connected wallet (path ethereum-1) — never to someone else's operator.
+  const ethAddress = me0 ? await deriveEthAddress(me0) : null;
   S.ethAddress = ethAddress;
   const balance = ethAddress ? await safe(() => eth.getBalance({ address: ethAddress })) : null;
 
@@ -351,7 +386,7 @@ async function load() {
     statTile("Panic mode", panicked ? pill("frozen", "bad") : pill("off", "ok")),
     statTile("Daily limit", policy ? `${fmtEth(ethLimit(policy))} <small>ETH</small>` : "—", "eth, per day"),
     statTile("Guardians", policy ? `${S.guardians.length} <small>of ${esc(policy.guard_threshold)} needed</small>` : "—"),
-    statTile("Sepolia balance", balance != null ? `${Number(formatEther(balance)).toFixed(4)} <small>ETH</small>` : "—", ethAddress ? "operator's derived address" : "address unknown"),
+    statTile("Sepolia balance", balance != null ? `${Number(formatEther(balance)).toFixed(4)} <small>ETH</small>` : "—", ethAddress ? "your wallet's derived address" : "connect a wallet"),
   ].join("");
 
   const me = connectedAccount();
@@ -362,14 +397,17 @@ async function load() {
     accountRows.push(row("your contracts", myList.map((c) => `<a href="#" data-switch-contract="${esc(c)}">${esc(c)}</a>${c === ACTIVE ? ` ${pill("active", "ok")}` : ""}`).join("<br>")));
   }
   accountRows.push(row("active contract", acct(ACTIVE)));
-  if (canManage) {
+  if (!me) {
+    accountRows.length = 0;
+    accountRows.push(`<tr><td><p class="empty">Connect a NEAR wallet to see your accounts.</p></td></tr>`);
+  } else if (canManage) {
     accountRows.push(row("operator", operator ? acct(operator) : "—"));
     accountRows.push(row("AI reviewer", reviewer ? acct(reviewer) : `<span class="muted">not set</span>`));
     accountRows.push(row("guardians", S.guardians.length ? S.guardians.map(acct).join("<br>") : `<span class="muted">none</span>`));
   } else {
     accountRows.push(row("contract accounts", `<span class="muted">Connect the operator/guardian wallet or deploy your own contract to view and manage its accounts.</span>`));
   }
-  accountRows.push(row("MPC network", acct(MPC)));
+  if (me) accountRows.push(row("MPC network", acct(MPC)));
   $("accounts").innerHTML = accountRows.join("");
 
   $("policy").innerHTML = policy
@@ -410,8 +448,8 @@ async function load() {
   ].join("");
 
   $("chainsig").innerHTML = [
-    row("NEAR account", operator ? acct(operator) : "—"),
-    row("derived ETH address", ethAddress ? `<code>${esc(ethAddress)}</code>` : `<span class="muted">could not derive</span>`),
+    row("NEAR account", me0 ? acct(me0) : `<span class="muted">not connected</span>`),
+    row("derived ETH address", ethAddress ? `<code>${esc(ethAddress)}</code>` : me0 ? `<span class="muted">could not derive</span>` : `<span class="muted">connect a wallet</span>`),
     row("Sepolia balance", balance != null ? `${esc(formatEther(balance))} ETH` : "—"),
     row("derivation path", `<code>${ETH_PATH}</code>`),
   ].join("");
@@ -528,6 +566,7 @@ $("verdict-form").addEventListener("submit", async (e) => {
   const hash = new FormData(e.target).get("hash").trim();
   const out = $("verdict-out");
   if (!hash) return;
+  if (!viewC) return toast("No active contract", { detail: "Connect a wallet and deploy or switch to a contract first.", kind: "bad" });
   const v = await safe(() => viewC.get_ai_verdict({ intent_hash: hash }));
   out.innerHTML = v
     ? `${verdictCell(v)} <span class="hint">reviewed ${esc(fmtDate(v.reviewed_at))}</span>`
@@ -550,6 +589,7 @@ $("transfer-form").addEventListener("submit", async (e) => {
   const to = fd.get("to").trim();
   const amount = fd.get("amount").trim();
   const memo = fd.get("memo").trim();
+  if (!viewC) return toast("No active contract", { detail: "Connect a wallet and deploy or switch to a contract first.", kind: "bad" });
   if (!/^\d+$/.test(amount)) return toast("Amount must be a whole number of wei", { kind: "bad" });
   const memoHash = await sha256hex(memo);
   const nonce = Number((await safe(() => viewC.get_nonce())) ?? 0);
@@ -757,7 +797,8 @@ $("configure-form").addEventListener("submit", async (e) => {
 
 function switchActive(id) {
   ACTIVE = id;
-  store.set("AEGIS_CONTRACT", id);
+  const me = connectedAccount();
+  if (me) store.set(activeKey(me), id);
   makeView();
   currentIntent = null;
   load().catch(console.error);
@@ -779,11 +820,11 @@ $("accounts").addEventListener("click", (e) => {
 $("refresh").addEventListener("click", (e) => busy(e.currentTarget, "Refreshing…", () => load().catch(console.error)));
 
 // ───────────────── boot ─────────────────
-$("active-contract").textContent = ACTIVE;
+$("active-contract").textContent = ACTIVE || "—";
 showDeployNeed();
 await initView().catch((e) => { console.error(e); toast("Could not reach NEAR RPC", { detail: errMsg(e), kind: "bad" }); });
 await initWallet().catch((e) => { console.error(e); $("who").textContent = "Wallet unavailable"; });
-await load().catch(console.error);
+if (!lastAccount) await load().catch(console.error); // syncWallet already loads when a wallet is restored
 
 // Dev-only handle for poking at wallet state in the console.
 if (import.meta.env.DEV) {

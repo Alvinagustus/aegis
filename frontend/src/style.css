@@ -102,6 +102,7 @@ h3 { font-size: 15px; font-weight: 700; }
   padding: 22px; position: relative; overflow: hidden; box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9);
 }
 .shield-card::before { content: ""; position: absolute; inset: 0; background: radial-gradient(360px 200px at 12% 0%, color-mix(in srgb, var(--c) 22%, transparent), transparent 70%); pointer-events: none; }
+.shield-card[data-state="idle"] { --c: var(--mute); }
 .shield-card[data-state="ok"] { --c: var(--teal); border-color: rgba(94, 234, 212, 0.4); }
 .shield-card[data-state="warn"] { --c: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
 .shield-card[data-state="bad"] { --c: var(--bad); border-color: rgba(248, 113, 113, 0.45); }
