@@ -11,6 +11,8 @@ gated by an AI risk review** before it is permitted to be signed. The same
 engine serves four patterns: **anti-drain protection, time capsules, digital
 inheritance, and payroll** — one shield, four uses.
 
+**Live dashboard:** https://aegispolicy.vercel.app
+
 ## Deployment (NEAR testnet)
 
 Deployed 2026-11-05 — see [`docs/deploy.md`](docs/deploy.md) for the full runbook.
@@ -26,7 +28,8 @@ The current deployment is **`aegispolicy.testnet`** (H6-fixed wasm, V1–V8 hard
 | Guardian #2 | `watchdog-guardian2-4d8a7f.testnet` |
 | Test contract (legacy panic cycle) | `watchdog-test-4d8a7f.testnet` |
 
-Explorer: https://explorer.testnet.near.org/accounts/aegispolicy.testnet
+Explorer: https://explorer.testnet.near.org/accounts/aegispolicy.testnet  
+Dashboard: https://aegispolicy.vercel.app
 
 > Note: contract state is borsh-serialized and layout-bound. Major code
 > versions are deployed to fresh accounts (v1 → v2 → v3 → v4 →
