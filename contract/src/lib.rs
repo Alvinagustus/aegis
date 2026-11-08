@@ -284,6 +284,13 @@ impl Watchdog {
         for guardian in guardians {
             s.guardian.insert(guardian, true);
         }
+        // H6: the map dedupes, so the pre-insert length check is not enough.
+        // Re-check against the stored guardians or `[a, a]` with threshold 2
+        // would initialize with a single guardian and holds could never clear.
+        require!(
+            s.guardian.len() as u32 >= guard_threshold,
+            "threshold exceeds unique guardian count"
+        );
         for (chain, address) in whitelist {
             require!(valid_label(&chain), "bad chain label");
             require!(valid_address(&address), "bad address");

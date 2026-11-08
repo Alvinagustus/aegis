@@ -907,3 +907,37 @@ fn v8_delimiter_injection_rejected() {
     wl(&mut c, "eth", "0xabc");
     assert!(c.is_whitelisted("eth".into(), "0xabc".into()));
 }
+
+/// H6: duplicate guardians must not satisfy the threshold — `[a, a]` with
+/// threshold 2 is rejected at init.
+#[test]
+fn h6_new_configured_rejects_duplicate_guardians() {
+    let mut ctx = VMContextBuilder::new();
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
+    expect_panic(|| {
+        Watchdog::new_configured(
+            oper(),
+            2,
+            DAY,
+            None,
+            vec![GUARD1.parse().unwrap(), GUARD1.parse().unwrap()],
+            vec![],
+        );
+    });
+}
+
+/// H6: two distinct guardians still initialize normally.
+#[test]
+fn h6_new_configured_accepts_distinct_guardians() {
+    let mut ctx = VMContextBuilder::new();
+    testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
+    let c = Watchdog::new_configured(
+        oper(),
+        2,
+        DAY,
+        None,
+        vec![GUARD1.parse().unwrap(), GUARD2.parse().unwrap()],
+        vec![],
+    );
+    assert_eq!(c.get_guardians().len(), 2);
+}
