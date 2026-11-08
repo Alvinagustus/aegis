@@ -25,6 +25,9 @@ const nearAction = (methodName, args, gas = 50_000_000_000_000n, deposit = 0n) =
 const params = new URLSearchParams(location.search);
 const DEMO = params.has("demo");
 const MPC = "v1.signer-prod.testnet";
+// Candidate contracts probed after a wallet connects. A candidate is only ever selected when the
+// connected wallet is its operator or one of its guardians, so other visitors never see it.
+const KNOWN_DEPLOYMENTS = ["aegispolicy.testnet"];
 const ETH_PATH = "ethereum-1";
 const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com";
 const NODE_URL = "https://test.rpc.fastnear.com";
@@ -202,13 +205,34 @@ function applyRoles() {
   }
 }
 
-function resolveActive() {
+// Does `me` run this contract (operator or guardian)? Read-only view calls, no wallet needed.
+async function roleIn(contractId, me) {
+  if (!window.__nearAccount) return null;
+  const c = new Contract(window.__nearAccount, contractId, { viewMethods: ["get_operator", "get_guardians"], changeMethods: [] });
+  const op = await safe(() => c.get_operator());
+  if (!op) return null;
+  if (op === me) return "operator";
+  const guardians = await safe(() => c.get_guardians(), []);
+  return (guardians || []).includes(me) ? "guardian" : null;
+}
+
+async function resolveActive() {
   if (DEMO) return;
   const me = connectedAccount();
   if (!me) { ACTIVE = null; return; }
   const saved = store.get(activeKey(me));
+  if (saved && ACCOUNT_RE.test(saved)) { ACTIVE = saved; return; }
   const mine = getMyDeploys(me);
-  ACTIVE = (saved && ACCOUNT_RE.test(saved) && saved) || mine[0] || null;
+  const candidates = [...new Set([...mine, `aegis.${me}`, ...KNOWN_DEPLOYMENTS])].filter((c) => ACCOUNT_RE.test(c));
+  ACTIVE = null;
+  for (const c of candidates) {
+    if (await roleIn(c, me)) {
+      ACTIVE = c;
+      rememberDeploy(me, c);
+      store.set(activeKey(me), c);
+      return;
+    }
+  }
 }
 
 async function syncWallet() {
@@ -218,7 +242,13 @@ async function syncWallet() {
   const me = connectedAccount();
   const changed = me !== lastAccount;
   lastAccount = me;
-  if (changed) { resolveActive(); makeView(); currentIntent = null; }
+  if (changed) {
+    renderWho();
+    if (!DEMO) { ACTIVE = null; makeView(); renderEmpty(); } // never show the previous account's data while resolving
+    await resolveActive();
+    makeView();
+    currentIntent = null;
+  }
   renderWho();
   applyRoles();
   if (changed) load().catch(console.error);
