@@ -3,8 +3,8 @@
     "total": 18,
     "passed": 18,
     "failed": 0,
-    "when": "2026-11-08T01:44:53.785Z",
-    "contract": "watchdog-v5-4d8a7f.testnet"
+    "when": "2026-11-08T04:08:20.186Z",
+    "contract": "aegispolicy.testnet"
   },
   "results": [
     {
@@ -32,7 +32,7 @@
       "name": "Memo injection (ignore previous instructions)",
       "kind": "attack",
       "expected": "Deny",
-      "risk": 100,
+      "risk": 95,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -42,7 +42,7 @@
       "name": "Amount anomaly vs memo",
       "kind": "attack",
       "expected": "Deny",
-      "risk": 78,
+      "risk": 85,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -52,7 +52,7 @@
       "name": "Approval rug (unlimited approve)",
       "kind": "attack",
       "expected": "Deny",
-      "risk": 95,
+      "risk": 92,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -62,7 +62,7 @@
       "name": "Address poisoning (new 'migrated' address)",
       "kind": "attack",
       "expected": "not_approve",
-      "risk": 35,
+      "risk": 25,
       "denied": false,
       "decision": "Deny",
       "pass": true
@@ -102,7 +102,7 @@
       "name": "Obfuscated payload (base64 blob)",
       "kind": "attack",
       "expected": "not_approve",
-      "risk": 95,
+      "risk": 88,
       "denied": true,
       "decision": "Deny",
       "pass": true
@@ -112,7 +112,7 @@
       "name": "Compromised key, within-limit, unknown address (C pattern)",
       "kind": "attack",
       "expected": "not_approve",
-      "risk": 35,
+      "risk": 30,
       "denied": false,
       "decision": "Hold",
       "pass": true
@@ -142,7 +142,7 @@
       "name": "First payment → brand-new address",
       "kind": "control",
       "expected": "Hold",
-      "risk": 12,
+      "risk": 10,
       "denied": false,
       "decision": "Hold",
       "pass": true
@@ -152,7 +152,7 @@
       "name": "Repeat payment 2192 known address",
       "kind": "control",
       "expected": "Approve",
-      "risk": 5,
+      "risk": 12,
       "denied": false,
       "decision": "Approve",
       "pass": true

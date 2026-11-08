@@ -24,7 +24,7 @@ const nearAction = (methodName, args, gas = 50_000_000_000_000n, deposit = 0n) =
 // ───────────────── constants ─────────────────
 const params = new URLSearchParams(location.search);
 const DEMO = params.has("demo");
-const DEFAULT_CONTRACT = "watchdog-v5-4d8a7f.testnet"; // current audited deployment, switchable in Setup
+const DEFAULT_CONTRACT = "aegispolicy.testnet"; // current audited deployment, switchable in Setup
 const MPC = "v1.signer-prod.testnet";
 const ETH_PATH = "ethereum-1";
 const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com";

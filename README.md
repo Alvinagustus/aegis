@@ -14,28 +14,28 @@ inheritance, and payroll** — one shield, four uses.
 ## Deployment (NEAR testnet)
 
 Deployed 2026-11-05 — see [`docs/deploy.md`](docs/deploy.md) for the full runbook.
-The current deployment is **v5** (`watchdog-v5-4d8a7f.testnet`); v1–v4 are
-kept as historical proof and left untouched.
+The current deployment is **`aegispolicy.testnet`** (H6-fixed wasm, V1–V8 hardening,
+1-day timelock); earlier versions are kept as historical proof and left untouched.
 
 | Role | Account |
 |---|---|
-| Contract v5 (current) | `watchdog-v5-4d8a7f.testnet` |
+| Contract (current) | `aegispolicy.testnet` |
 | Operator (wallet) | `watchdog-wallet-4d8a7f.testnet` |
 | AI reviewer | `watchdog-reviewer-4d8a7f.testnet` |
 | Guardian | `watchdog-guardian-4d8a7f.testnet` |
 | Guardian #2 | `watchdog-guardian2-4d8a7f.testnet` |
 | Test contract (legacy panic cycle) | `watchdog-test-4d8a7f.testnet` |
 
-Explorer: https://explorer.testnet.near.org/accounts/watchdog-v5-4d8a7f.testnet
+Explorer: https://explorer.testnet.near.org/accounts/aegispolicy.testnet
 
-> Note: contract state is borsh-serialized and layout-bound. Each major code
-> version was deployed to a fresh account (v1 → v2 → v3 → v4 → v5) instead of
-> an in-place upgrade; a state migration would be needed for in-place upgrades.
-> v5 is initialized atomically with `new_configured` and a **1-day admin
-> timelock** — configuration is no longer written through an instant setter.
+> Note: contract state is borsh-serialized and layout-bound. Major code
+> versions are deployed to fresh accounts (v1 → v2 → v3 → v4 →
+> `aegispolicy.testnet`) instead of an in-place upgrade; a state migration would
+> be needed for in-place upgrades. The current contract is initialized
+> atomically with `new_configured` and a **1-day admin timelock**.
 
-Verified live on testnet (v1–v4; the same flows are re-verified on v5 by the
-red-team benchmark, 18/18):
+Verified live on testnet (v1–v4; the same flows are re-verified on the current
+contract by the red-team benchmark, 18/18):
 - unknown address → `Hold` (hold #1 pending on-chain)
 - benign intent, AI risk 10, whitelisted → `Approve`
 - phishing intent (seed-phrase memo, 42 ETH), AI risk 100 → `Deny` — even though the address is whitelisted
@@ -108,18 +108,18 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 
 1. **Read the rules (no setup, no key, no wallet):**
    ```sh
-   near view watchdog-v5-4d8a7f.testnet get_policy '{}' --networkId testnet
+   near view aegispolicy.testnet get_policy '{}' --networkId testnet
    # → daily_limits, quiet_period, guard_threshold, panic_cooldown: live answers
    ```
-   Or open the dashboard: `cd frontend && npm install --legacy-peer-deps && npm run dev`.
+   Or open the dashboard: `cd frontend && npm install --legacy-peer-deps && npm run dev`. To deploy your own contract from the dashboard, use **MyNearWallet** or **Nightly** — wallets that issue function-call keys (e.g. Meteor, Sender) cannot deploy contracts (use `./setup.sh` via CLI instead).
 2. **Reproduce a decision (verdicts already on-chain — no API key needed):**
    ```sh
-   near view watchdog-v5-4d8a7f.testnet get_nonce '{}' --networkId testnet
+   near view aegispolicy.testnet get_nonce '{}' --networkId testnet
    # → e.g. 1
-   near view watchdog-v5-4d8a7f.testnet compute_intent_hash \
+   near view aegispolicy.testnet compute_intent_hash \
      '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"0","memo_hash":"<sha256hex of memo>","nonce":1}' \
      --networkId testnet
-   near view watchdog-v5-4d8a7f.testnet simulate_tx \
+   near view aegispolicy.testnet simulate_tx \
      '{"chain":"eth","to":"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D","amount":"0","memo_hash":"<sha256hex>","nonce":1}' \
      --networkId testnet
    ```
@@ -183,7 +183,7 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 > fix — the contract itself calling MPC `sign` — is on the roadmap.
 
 - **Hostile/gone guardian**: panic can only be unfrozen by the owner after the cooldown (default 3 days; changes are timelocked and floored at 5 minutes) — a hostile guardian cannot brick the wallet forever, and a hostile owner cannot instantly dismiss the guardian's alarm. But a panicked guardian can delay user's spending for the duration of the cooldown — a deliberate trade-off: safety > convenience.
-- **Guardian vetoes are per-guardian, threshold-gated, and reset when the action ends.** A single guardian cannot reach the threshold alone (double-voting is rejected), votes only count against a live proposal, cannot veto their own removal, and votes are cleared when the underlying change is applied or vetoed — so re-proposals start from zero. A hostile minority guardian can still delay (not block) changes.
+- **Guardian vetoes are per-guardian, threshold-gated, and reset when the action ends.** A single guardian cannot reach the threshold alone (double-voting is rejected), votes only count against a live proposal, cannot veto their own removal, and votes are cleared when the underlying change is applied or vetoed — so re-proposals start from zero. A hostile minority guardian can still delay (not block) changes. **A removed guardian's already-cast votes can still count** on actions/estate votes that are still pending until that cycle is cleared (removal does not prune old `veto_votes`/`heir_votes` entries, and counting does not re-check current guardian status); the impact is bounded because V6 prevents removals below the threshold and votes are cleared when the action ends or on `check_in`.
 - **The admin timelock cannot be zeroed (V1).** Every sensitive setter is `propose_*` → `apply_*`. The delay is 1 day by default and can only be *increased* instantly; lowering it is itself timelocked and can never go below 5 minutes. v5 is initialized atomically with `new_configured`, so its live delay is 1 day — there is no instant "set delay to 0 for the demo" path anymore.
 - **The timelock has a 30-day ceiling (H1).** Because increases are instant, a stolen operator key can raise the delay to the maximum and lock configuration changes for up to 30 days. The ceiling bounds that lockout, and lowering the delay still goes through the timelock; keep the operator key hot-wallet-grade.
 - **Stolen operator key**: the attacker cannot reset the rules — the delay cannot be zeroed, and proposed reviewer/whitelist/guardian changes sit in the timelock where guardians can veto them. Any transfer it attempts still passes the AI gate, daily limit, and first-seen hold (panic can cut the damage short). It can, however, call MPC directly outside the cooperating script — see the trust model above.
@@ -193,11 +193,14 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
 - **TEE attestation is not verified on-chain (F14)**: the reviewer runs inside NEAR AI Cloud's TEE, but the contract trusts the appointed reviewer account's signature, not a hardware quote. A production version would verify an attestation before accepting verdicts.
 - **Operator self-review**: in this demo the operator appoints the reviewer, so a fully malicious operator from genesis could appoint itself and self-approve. Disclosed limitation: appointing a replacement reviewer is timelocked (guardians can veto), and the guardrails that matter against a stolen operator (delay floor, daily limit, first-seen holds, guardian panic) stay intact regardless of who the reviewer is.
 - **Time capsules cannot skip the quiet period (V3)**: a capsule's `release_at` must be at least one quiet period in the future, and the destination becomes known only when it actually releases — a stolen key cannot seal-and-release instantly to a never-seen address.
+- **Inheritance check-in revokes only estate-granted access**: `check_in` closes the estate and removes only whitelist entries tracked as granted by the estate (`heir_whitelisted`); owner-preexisting entries and addresses whitelisted purely through the admin timelock are preserved. An estate-granted entry **cannot be promoted** to survive check-in by re-whitelisting it mid-estate, because `apply_whitelist_add` does not clear the estate marker — aligned with the dead-man's switch (owner return ends estate access), but a small operational rigidity.
 - **Unknown chain labels are denied by default (V4)**: all EVM labels share the `eth` daily bucket, all Bitcoin aliases share `btc`, and every other label shares `other` (limit 0 until configured). Relabeling cannot multiply the limit.
-- **Payroll bypasses the AI gate by design**: employees are pre-registered by the owner (like a whitelist), so their payments consume the daily limit but are not individually AI-scored. If you need per-payment scoring for payroll, register each payment through `evaluate_tx` instead — that is the real tradeoff, and it is explicit in the code (`run_payroll`).
-- **Failed evaluation**: decision only lives at *signing time*; after a transfer is approved and signed, nothing "pulled back" — therefore, quiet period + daily limit stands before signing happens.
+- **Payroll bypasses the AI gate by design**: employees are pre-registered by the owner (like a whitelist), so their payments consume the daily limit but are not individually AI-scored. If you need per-payment scoring for payroll, register each payment through `evaluate_tx` instead — that is the real tradeoff, and it is explicit in the code (`run_payroll`). `run_payroll` does **not** whitelist employees; it marks them `seen` and creates a single-use `preapproved` entry per `chain|address|salary` (spend is recorded when `evaluate_tx` consumes that entry). `run_payroll` does not run `valid_label` on its `chain` input, but unlisted labels fall into the `other` bucket (default limit 0), so this is not a spend-limit bypass. Removing an employee cleans the employee record and chain-scoped `seen`/whitelist entries, but it does **not** clear an already-created `preapproved` payroll entry (still consumable once by the operator via `evaluate_tx`).
+- **Failed evaluation / dry-run**: a decision only lives at *signing time*; after a transfer is approved and signed, nothing is "pulled back" — therefore the quiet period + daily limit stand before signing happens. `simulate_tx` is a **dry-run view** and can diverge from `evaluate_tx`: it does not check `preapproved` entries or existing open holds for `(chain,to)`, and it has no side effects (it does not open/consume holds, verdicts, nonce, or spend), so it must not be treated as the final decision.
+- **`release_hold` vs panic (minor inconsistency)**: `release_capsule` refuses while panic is on, but `release_hold` does not. `release_hold` only stages a `preapproved` entry; `evaluate_tx` still denies during panic, so this is safe — just inconsistent.
 - **`evaluate_tx` does not validate the destination (H3)**: the `to` value is accepted as given, so a malformed string opens a hold instead of being rejected. The chain bucket still caps spending and the signer must produce a valid transaction, but a production version would validate the address format in `evaluate_tx` too.
 - **Holds are append-only at demo scale**: `evaluate_tx` scans holds and they are never pruned; fine for a demo, but a production version would need pruning or an index.
+- **`new()` bootstrap footgun**: `new_configured` is the safe production bootstrap (atomic config + checks). The simpler `new(operator, guard_threshold)` can create a contract with `guard_threshold` greater than the number of guardians (e.g. threshold 2, no guardians), which makes holds unclearable and is hard to recover because threshold changes are constrained — treat `new()` as dev/test-only.
 
 ## Related work
 
@@ -256,7 +259,7 @@ Contract (Rust → WASM, deployable to NEAR testnet):
 ```sh
 cd contract
 cargo build --target wasm32-unknown-unknown --release   # WASM at target/wasm32-unknown-unknown/release/watchdog.wasm
-cargo test                                              # 29 unit tests
+cargo test                                              # 42 unit tests
 ```
 
 AI reviewer agent:
@@ -287,7 +290,10 @@ cd frontend && npm install && npm run dev    # or: npm run build
 
 The dashboard is interactive: connect any NEAR testnet wallet to
 - **deploy Aegis to a new contract account** (prebuilt `watchdog.wasm` ships in
-  `frontend/public/`, so no Rust is needed), with yourself as operator,
+  `frontend/public/`, so no Rust is needed), with yourself as operator. This
+  needs a wallet with full deploy access such as **MyNearWallet** or **Nightly**;
+  wallets that hand out function-call keys (Meteor, Sender) cannot deploy
+  contracts — use the CLI `./setup.sh` instead,
 - submit `evaluate_tx`, whitelist, check-in, **run payroll**, and `panic_off`
   — all signed by your wallet.
 The AI verdict step stays in `tools/reviewer/` (the API key must never reach

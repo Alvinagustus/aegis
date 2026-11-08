@@ -15,7 +15,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import * as nearAPI from "near-api-js";
 
-const CONTRACT = "watchdog-v5-4d8a7f.testnet"; // current audited deployment
+const CONTRACT = "aegispolicy.testnet"; // current audited deployment
 const TEST_CONTRACT = "watchdog-test-4d8a7f.testnet"; // 60s panic cooldown
 const OPERATOR = "watchdog-wallet-4d8a7f.testnet";
 const REVIEWER = "watchdog-reviewer-4d8a7f.testnet";

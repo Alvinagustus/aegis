@@ -19,7 +19,7 @@ import { chainAdapters, contracts } from "chainsig.js";
 import * as nearAPI from "near-api-js";
 
 const OPERATOR = "watchdog-wallet-4d8a7f.testnet";
-const CONTRACT = "watchdog-v5-4d8a7f.testnet";
+const CONTRACT = "aegispolicy.testnet";
 const MPC = "v1.signer-prod.testnet";
 const PATH = "ethereum-1";
 const TO = process.argv[2] || "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
