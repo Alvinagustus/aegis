@@ -54,6 +54,20 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } },
 };
 
+function myDeploysKey(acc) { return `AEGIS_MY_DEPLOY_${acc}`; }
+function getMyDeploys(acc) {
+  if (!acc) return [];
+  try { return JSON.parse(store.get(myDeploysKey(acc)) || "[]"); } catch { return []; }
+}
+function rememberDeploy(acc, contractId) {
+  if (!acc || !contractId) return;
+  const list = getMyDeploys(acc);
+  if (!list.includes(contractId)) {
+    list.unshift(contractId);
+    store.set(myDeploysKey(acc), JSON.stringify(list.slice(0, 20)));
+  }
+}
+
 function fmtEth(wei) {
   if (wei == null) return "—";
   let n;
@@ -340,13 +354,23 @@ async function load() {
     statTile("Sepolia balance", balance != null ? `${Number(formatEther(balance)).toFixed(4)} <small>ETH</small>` : "—", ethAddress ? "operator's derived address" : "address unknown"),
   ].join("");
 
-  $("accounts").innerHTML = [
-    row("operator", operator ? acct(operator) : "—"),
-    row("contract", acct(ACTIVE)),
-    row("AI reviewer", reviewer ? acct(reviewer) : `<span class="muted">not set</span>`),
-    row("guardians", S.guardians.map(acct).join("<br>") || `<span class="muted">none</span>`),
-    row("MPC network", acct(MPC)),
-  ].join("");
+  const me = connectedAccount();
+  const myList = getMyDeploys(me);
+  const canManage = !!me && (isOperator() || isGuardian() || myList.includes(ACTIVE));
+  const accountRows = [row("connected wallet", me ? acct(me) : `<span class="muted">not connected</span>`)];
+  if (me && myList.length) {
+    accountRows.push(row("your contracts", myList.map((c) => `<a href="#" data-switch-contract="${esc(c)}">${esc(c)}</a>${c === ACTIVE ? ` ${pill("active", "ok")}` : ""}`).join("<br>")));
+  }
+  accountRows.push(row("active contract", acct(ACTIVE)));
+  if (canManage) {
+    accountRows.push(row("operator", operator ? acct(operator) : "—"));
+    accountRows.push(row("AI reviewer", reviewer ? acct(reviewer) : `<span class="muted">not set</span>`));
+    accountRows.push(row("guardians", S.guardians.length ? S.guardians.map(acct).join("<br>") : `<span class="muted">none</span>`));
+  } else {
+    accountRows.push(row("contract accounts", `<span class="muted">Connect the operator/guardian wallet or deploy your own contract to view and manage its accounts.</span>`));
+  }
+  accountRows.push(row("MPC network", acct(MPC)));
+  $("accounts").innerHTML = accountRows.join("");
 
   $("policy").innerHTML = policy
     ? [
@@ -677,6 +701,7 @@ async function deployAegis({ contractAccount, fundNear, threshold, reviewer, gua
       actionCreators.functionCall(method, Buffer.from(JSON.stringify(args)), 50_000_000_000_000n, 0n),
     ],
   });
+  rememberDeploy(operator, contractAccount);
   out.innerHTML = `${pill("deployed", "ok")} <span class="mono">${esc(txHash(res) || "sent — check the explorer")}</span> <span class="hint">Switching the dashboard to the new contract…</span>`;
   switchActive(contractAccount);
 }
@@ -742,6 +767,13 @@ $("switch-form").addEventListener("submit", (e) => {
   const id = new FormData(e.target).get("contract").trim().toLowerCase();
   if (!ACCOUNT_RE.test(id)) return toast("Invalid NEAR account id", { detail: id, kind: "bad" });
   switchActive(id);
+});
+
+$("accounts").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-switch-contract]");
+  if (!a) return;
+  e.preventDefault();
+  switchActive(a.dataset.switchContract);
 });
 
 $("refresh").addEventListener("click", (e) => busy(e.currentTarget, "Refreshing…", () => load().catch(console.error)));
