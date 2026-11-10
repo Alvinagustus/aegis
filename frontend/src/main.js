@@ -478,7 +478,6 @@ markStep(1);
 async function simulateDecision(intent) {
   const verdict = await getVerdict(intent.ih);
   if (mode === "sim" && demo) {
-    // demo.simulate_tx needs intent_hash; also consider overlay verdict stored in demo
     const d = await demo.viewC.simulate_tx({ ...intent, intent_hash: intent.ih });
     return { decision: d, verdict };
   }
@@ -486,8 +485,9 @@ async function simulateDecision(intent) {
   if (S.panicked || simState.panicked) return { decision: "Deny", verdict };
   if (!verdict) return { decision: "Deny", verdict };
   if (verdict.denied || verdict.risk >= 70) return { decision: "Deny", verdict };
-  const wl = await safe(() => viewC.is_whitelisted({ chain: intent.chain, address: intent.to }), false);
-  if (wl || simState.whitelist.has(String(intent.to).toLowerCase())) return { decision: "Approve", verdict };
+  const addr = String(intent.to || "").toLowerCase();
+  const wl = simState.whitelist.has(addr) || await safe(() => viewC.is_whitelisted({ chain: intent.chain, address: intent.to }), false);
+  if (wl) return { decision: "Approve", verdict };
   return { decision: "Hold", verdict };
 }
 
@@ -575,15 +575,18 @@ function simAction(name, detail, mutate) {
   if (mutate) mutate();
   toast(`Simulated: ${name}`, { detail: `${detail} (web demo, no on-chain transaction)`, kind: "ok" });
   // reflect simple state in UI where possible
-  if (name.includes("panic on")) { simState.panicked = true; if (demo?.state) demo.state.panicked = true; }
-  if (name.includes("panic off")) { simState.panicked = false; if (demo?.state) demo.state.panicked = false; }
+  if (name.includes("panic on")) { simState.panicked = true; if (demo?.state) demo.state.panicked = true; S.panicked = true; }
+  if (name.includes("panic off")) { simState.panicked = false; if (demo?.state) demo.state.panicked = false; S.panicked = false; }
   if (currentIntent) renderIntent().catch(() => {});
 }
 $("whitelist-form").addEventListener("submit", (e) => {
   e.preventDefault();
-  const to = (new FormData(e.target).get("address").trim() || currentIntent?.to || "");
+  const to = (new FormData(e.target).get("address").trim() || currentIntent?.to || "").toLowerCase();
   if (!to) return toast("Enter an address", { kind: "bad" });
-  simAction("propose whitelist", `${to}`, () => simState.whitelist.add(to.toLowerCase()));
+  simState.whitelist.add(to);
+  if (demo?.state?.whitelist) demo.state.whitelist.add(to);
+  toast("Simulated: whitelist", { detail: `${to} ditambahkan ke whitelist (simulasi demo). Coba evaluate lagi untuk melihat efeknya.`, kind: "ok" });
+  if (currentIntent) renderIntent().catch(() => {});
 });
 $("cancel-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("cancel hold", "hold cancelled", null); });
 $("release-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("release hold", "hold released", null); });
