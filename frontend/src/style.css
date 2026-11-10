@@ -237,3 +237,16 @@ details.setup form { padding-top: 6px; border-top: 1px solid var(--line); margin
 .kv td, .out, .result-row, .health span { overflow-wrap: anywhere; }
 .kv code, .result-row code { word-break: break-all; }
 body { overflow-x: clip; }
+
+/* C1 demo chooser */
+[hidden] { display: none !important; }
+.chooser-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0 14px; }
+.chooser-actions .btn { padding: 12px 18px; font-size: 14.5px; }
+.mode-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin: 10px 0 14px; padding: 10px 14px; border-radius: 12px;
+  background: rgba(125, 211, 252, 0.08); border: 1px solid rgba(125, 211, 252, 0.25);
+  font-size: 13.5px; color: var(--soft);
+}
+.mode-banner .pill { margin: 0; }
+.mode-banner code { font-size: 12.5px; }

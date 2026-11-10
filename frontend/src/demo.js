@@ -39,6 +39,8 @@ export function createDemo({ healthy = false } = {}) {
     async is_inheritance_open() { return false; },
     async get_employees() { return [{ address: "0xa1…c4", salary: Y(0.1), active: true }, { address: "0xb2…9e", salary: Y(0.2), active: true }]; },
     async get_payroll_runs() { return 1; },
+    async get_admin_proposals() { return [["daily_limit:eth", "10000000000000000000", String(now() - 0.5 * DAY)]]; },
+    async get_admin_delay() { return String(DAY); },
   };
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));

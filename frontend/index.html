@@ -30,21 +30,52 @@
       </nav>
       <div class="topbar-right">
         <span class="chip net"><span class="dot live"></span>NEAR testnet</span>
-        <span id="who" class="who"><span class="dot"></span>Read-only</span>
+        <span id="who" class="who"><span class="dot"></span>Demo</span>
         <span id="roles" class="roles"></span>
-        <button id="connect" class="btn btn-primary btn-sm" type="button">Connect wallet</button>
+        <button id="mode-switch" class="btn btn-ghost btn-sm" type="button" hidden>Change demo</button>
       </div>
     </header>
 
-    <!-- ───────── Hero: shield status ───────── -->
-    <section class="hero" id="top">
+    <!-- ───────── Demo chooser (C1) ───────── -->
+    <section class="hero" id="demo-chooser" aria-labelledby="chooser-title">
       <div class="hero-copy">
-        <p class="eyebrow">Connect a wallet · inspect or deploy your own policy</p>
-        <h1>A deadbolt for<br />cross-chain spending.</h1>
+        <p class="eyebrow">No wallet · no setup · read-only</p>
+        <h1 id="chooser-title">A deadbolt for<br />cross-chain spending.</h1>
         <p class="lead">
           Every transfer replays through an on-chain policy and an AI risk review before it can be signed.
-          Connect your own NEAR testnet wallet and this page reads the rules straight from your contract — there is no hidden admin API.
+          Explore Aegis in a guided, read-only demo — no wallet connection required.
         </p>
+        <div class="chooser-actions">
+          <button id="choose-sim" class="btn btn-primary" type="button">Try instant simulated demo</button>
+          <button id="choose-live" class="btn" type="button">View live on-chain demo (read-only)</button>
+        </div>
+        <p class="hint">Simulated runs locally in your browser. Live reads the real <code>aegispolicy.testnet</code> contract on NEAR testnet (read-only). To deploy and operate your own instance, use the CLI — see the <a href="https://github.com/Alvinagustus/aegis#build" target="_blank" rel="noreferrer">README</a>.</p>
+      </div>
+
+      <div class="shield-card" id="shield-chooser" data-state="idle">
+        <div class="shield-top">
+          <svg class="shield-svg" viewBox="0 0 64 64" width="84" height="84" role="img" aria-label="Shield">
+            <path class="shield-body" d="M32 5 54 13v18c0 13-8.5 22-22 28C18.5 53 10 44 10 31V13z" stroke-width="4" stroke-linejoin="round" />
+            <path class="g g-ok" d="M22 32.500l7 7L43 25" fill="none" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <div>
+            <div class="shield-title">Pick a demo</div>
+            <div class="shield-sub">Instant simulated data, or the live on-chain contract — both read-only.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────── Hero: shield status (active demo) ───────── -->
+    <section class="hero" id="top" hidden>
+      <div class="hero-copy">
+        <p class="eyebrow" id="mode-eyebrow">Read-only demo</p>
+        <h1>A deadbolt for<br />cross-chain spending.</h1>
+        <p class="lead" id="mode-lead">
+          Every transfer replays through an on-chain policy and an AI risk review before it can be signed.
+          This is a read-only demo — no wallet, no signing.
+        </p>
+        <div id="mode-banner" class="mode-banner" role="status"></div>
         <div class="active-line">
           <span class="muted">Active contract</span>
           <code id="active-contract" class="pill-code">—</code>
@@ -69,6 +100,7 @@
       </div>
     </section>
 
+    <div id="demo-app" hidden>
     <div id="stats" class="stats" aria-live="polite"></div>
 
     <main class="main">
@@ -219,50 +251,11 @@
         </section>
       </div>
 
-      <!-- ───────── Setup ───────── -->
-      <details class="card setup" id="setup">
-        <summary><span>Setup &amp; deploy</span><span class="hint">create your own Aegis contract</span></summary>
-        <p class="hint">Wallets that hand out function-call keys (Meteor, Sender) cannot deploy contracts. Use MyNearWallet or Nightly, or the CLI: <code>./setup.sh &lt;your-account&gt; &lt;contract-account&gt;</code>.</p>
-        <form id="deploy-form" class="form-grid">
-          <label>Contract account (sub-account of yours)
-            <input name="account" id="deploy-account" placeholder="aegis.yourname.testnet" required autocomplete="off" />
-          </label>
-          <label>Fund for storage + init (NEAR)
-            <input name="fund" id="deploy-fund" value="5" inputmode="decimal" required />
-          </label>
-          <label>Guardian threshold
-            <input name="threshold" value="1" inputmode="numeric" required />
-          </label>
-          <label>Guardian account (optional)
-            <input name="guardian" placeholder="guardian.yourname.testnet" autocomplete="off" />
-          </label>
-          <label>AI reviewer account (optional)
-            <input name="reviewer" placeholder="reviewer.yourname.testnet" autocomplete="off" />
-          </label>
-          <div class="form-action"><button class="btn btn-primary" type="submit">1. Create + deploy + init</button></div>
-        </form>
-        <p class="hint" id="deploy-need"></p>
-        <form id="configure-form" class="form-grid">
-          <label>AI reviewer account (optional)
-            <input name="reviewer" placeholder="reviewer.yourname.testnet" autocomplete="off" />
-          </label>
-          <label>Guardian account (optional)
-            <input name="guardian" placeholder="guardian.yourname.testnet" autocomplete="off" />
-          </label>
-          <div class="form-action"><button class="btn" type="submit">2. Set reviewer + guardian</button></div>
-        </form>
-        <form id="switch-form" class="form-grid">
-          <label>Switch the dashboard to another contract
-            <input name="contract" placeholder="aegis.yourname.testnet" autocomplete="off" />
-          </label>
-          <div class="form-action"><button class="btn" type="submit">Switch</button></div>
-        </form>
-        <div id="deploy-out" class="out"></div>
-      </details>
+      <!-- Setup/deploy removed in C1 demo UI: use CLI to deploy your own instance -->
 
       <!-- ───────── Proof ───────── -->
       <section class="card" id="proof" aria-labelledby="h-proof">
-        <div class="card-head"><div><h2 id="h-proof">Recorded guarded transfer</h2><p class="hint">Reference run by the Aegis author on the author's own deployment — not your wallet.</p></div></div>
+        <div class="card-head"><div><h2 id="h-proof">Recorded guarded transfer</h2><p class="hint">Reference run by the Aegis author on the author's own deployment.</p></div></div>
         <ol class="timeline">
           <li><b>AI review</b><span>0.001 ETH intent scored <b>risk 5</b>, attested with <code>submit_verdict</code>.</span></li>
           <li><b>Policy</b><span><code>simulate_tx</code> → <b>Approve</b> (whitelisted, within the daily limit).</span></li>
@@ -272,10 +265,11 @@
         </ol>
       </section>
     </main>
+    </div>
 
     <footer class="footer">
       <span>Aegis · built at NEAR Hackathon · tracks <code>open</code> + <code>security</code></span>
-      <span>testnet only</span>
+      <span><a href="https://github.com/Alvinagustus/aegis" target="_blank" rel="noreferrer">GitHub</a> · read-only demo · testnet only</span>
     </footer>
 
     <div id="toasts" class="toasts" role="status" aria-live="polite"></div>

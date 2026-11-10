@@ -101,7 +101,7 @@ mined in block 12067827, status `success`:
 - `contract/` — NEAR smart contract (Rust, `near-sdk 5`). A policy engine with the rules: daily limit, first-seen address → hold (quiet period), whitelist, panic mode (all spending frozen by the guardian, unfreeze only by owner after cooldown), guardian escalation M-of-N, cancel by the owner. **Also ships three usage patterns on the same engine:** time capsules (seal funds until a date + letter), digital inheritance (check-in clock, guardians open the estate after silence), and payroll (registered employees paid in batches under the same daily limit). 42 unit tests.
 - **AI reviewer agent** (`tools/reviewer/`) — a risk model running inside NEAR AI Cloud's TEE (Qwen3.8-27B) scores each intent and attests its verdict on-chain via `submit_verdict(risk 0–100, denied, model)`. Only the appointed reviewer account can do that, so the operator cannot forge a "safe" score for its own transfer. Verdicts are public and auditable. Rules: no verdict → deny; AI deny or risk ≥ 70 → deny even for whitelisted addresses; low risk → continue to the plain rules.
 - **Chain Signatures signer** (`tools/chainsig/`) — chainsig.js derives the operator's Ethereum address via the NEAR MPC network, prepares the tx, gets it MPC-signed, finalizes and broadcasts to Sepolia. Signing only happens after the Aegis contract approves.
-- `frontend/` — Vite dashboard, **wallet-scoped**: it starts empty and shows nothing until you connect your own NEAR testnet wallet; then it reads *your* contract (policy, verdicts, holds, panic state) and *your* wallet's derived ETH address + Sepolia balance. No author accounts are baked into the UI. Read-only by design: the operator key and NEAR AI API key never touch the browser; transfers are executed by the operator agent (`tools/chainsig/`).
+- `frontend/` — Vite dashboard (live demo) so anyone can explore Aegis with zero setup: an **instant simulated demo** and a **read-only view of the live on-chain demo contract**. To deploy and operate your own Aegis instance, use the CLI and tools below (`./setup.sh`, `docs/deploy.md`) — each user runs their own contract. Read-only by design: the operator key and NEAR AI API key never touch the browser; transfers are executed by the operator agent (`tools/chainsig/`).
 
 ## Try it (do X → see Y)
 
@@ -114,7 +114,7 @@ https://github.com/near/near-cli-rs/releases), and a NEAR AI API key
    near view aegispolicy.testnet get_policy '{}' --networkId testnet
    # → daily_limits, quiet_period, guard_threshold, panic_cooldown: live answers
    ```
-   Or open the dashboard (connect your own testnet wallet, then deploy your own contract from Setup): `cd frontend && npm install --legacy-peer-deps && npm run dev`. To deploy your own contract from the dashboard, use **MyNearWallet** or **Nightly** — wallets that issue function-call keys (e.g. Meteor, Sender) cannot deploy contracts (use `./setup.sh` via CLI instead).
+   Or open the **live dashboard** for a guided demo (no wallet needed): https://aegispolicy.vercel.app — try the instant simulated demo or the read-only live on-chain contract view. (To run locally: `cd frontend && npm install --legacy-peer-deps && npm run dev`.) To **deploy and operate your own instance** instead, use the CLI (`./setup.sh`) and tools below — see [Build](#build) / [`docs/deploy.md`](docs/deploy.md).
 2. **Reproduce a decision (verdicts already on-chain — no API key needed):**
    ```sh
    near view aegispolicy.testnet get_nonce '{}' --networkId testnet
@@ -288,19 +288,19 @@ cd tools/bench && npm install && node bench.mjs   # writes results.json + result
 Frontend dashboard:
 
 ```sh
-cd frontend && npm install && npm run dev    # or: npm run build
+cd frontend && npm install --legacy-peer-deps && npm run dev    # or: npm run build
 ```
 
-The dashboard is interactive: connect any NEAR testnet wallet to
-- **deploy Aegis to a new contract account** (prebuilt `watchdog.wasm` ships in
-  `frontend/public/`, so no Rust is needed), with yourself as operator. This
-  needs a wallet with full deploy access such as **MyNearWallet** or **Nightly**;
-  wallets that hand out function-call keys (Meteor, Sender) cannot deploy
-  contracts — use the CLI `./setup.sh` instead,
-- submit `evaluate_tx`, whitelist, check-in, **run payroll**, and `panic_off`
-  — all signed by your wallet.
-The AI verdict step stays in `tools/reviewer/` (the API key must never reach
-the browser); MPC signing stays in `tools/chainsig/` (same operator key).
+The **live dashboard** (https://aegispolicy.vercel.app) is a guided, read-only demo for judges — no wallet or setup required:
+- **Instant simulated demo** — explore policy behavior locally in the browser.
+- **Live on-chain demo (read-only)** — inspect the real `aegispolicy.testnet` contract state on testnet.
+
+There is no "Connect wallet" in the main UI. To **deploy and operate your own Aegis instance** (self-serve, each person/team runs their own contract), use the CLI and tools:
+- Build and deploy: `(cd contract && cargo build --target wasm32-unknown-unknown --release)` then `./setup.sh <your-near-account> <your-contract-account> [reviewer] [guardian] [threshold]` (full runbook: [`docs/deploy.md`](docs/deploy.md)).
+- AI verdicts: `tools/reviewer/` (attests on-chain; needs `NEAR_AI_API_KEY` and reviewer key, see `.env.example`).
+- Guarded signing/broadcast: `tools/chainsig/` (Chain Signatures + MPC, operator key).
+
+Keys never reach the browser; the web dashboard is read-only.
 
 Full testnet deploy runbook: [`docs/deploy.md`](docs/deploy.md).
 
