@@ -49,7 +49,7 @@
           <button id="choose-sim" class="btn btn-primary" type="button">Try instant simulated demo</button>
           <button id="choose-live" class="btn" type="button">View live on-chain demo (read-only)</button>
         </div>
-        <p class="hint">Simulated runs locally in your browser. Live reads the real <code>aegispolicy.testnet</code> contract on NEAR testnet (read-only). To deploy and operate your own instance, use the CLI — see the <a href="https://github.com/Alvinagustus/aegis#build" target="_blank" rel="noreferrer">README</a>.</p>
+        <p class="hint">Semua interaksi di web demo disimulasikan (tanpa on-chain writes). Simulated berjalan lokal di browser; Live membaca state nyata <code>aegispolicy.testnet</code> di testnet. Untuk deploy/operasi instance sendiri, gunakan CLI — lihat <a href="https://github.com/Alvinagustus/aegis#build" target="_blank" rel="noreferrer">README</a>.</p>
       </div>
 
       <div class="shield-card" id="shield-chooser" data-state="idle">
@@ -160,19 +160,22 @@
           <li class="step" id="step-2">
             <span class="step-n">2</span>
             <div class="step-body">
-              <h3>Get an AI verdict <span class="hint">(local agent)</span></h3>
-              <p class="hint">Run the reviewer once so a verdict exists on-chain for this exact intent.</p>
+              <h3>Get an AI verdict <span class="hint">(simulated in web demo)</span></h3>
+              <p class="hint">The reviewer scores the intent and attests a verdict. In this web demo the verdict is simulated in-browser (the CLI command is shown for real/self-serve use).</p>
               <pre class="cmd" id="cmd-review"><code>Fill in step 1 first…</code></pre>
-              <div class="actions"><button id="copy-review" class="btn btn-ghost btn-sm" type="button" disabled>Copy command</button></div>
+              <div class="actions">
+                <button id="do-sim-verdict" class="btn btn-primary btn-sm" type="button" disabled>Simulate AI verdict</button>
+                <button id="copy-review" class="btn btn-ghost btn-sm" type="button" disabled>Copy CLI command</button>
+              </div>
             </div>
           </li>
           <li class="step" id="step-3">
             <span class="step-n">3</span>
             <div class="step-body">
-              <h3>Submit to the contract &amp; sign</h3>
-              <p class="hint">The operator wallet submits <code>evaluate_tx</code>. Only an <b>Approve</b> may be signed via Chain Signatures.</p>
+              <h3>Evaluate &amp; sign <span class="hint">(simulated)</span></h3>
+              <p class="hint">The contract decides (Approve/Hold/Deny) based on policy + verdict; only Approve may be signed. In this web demo the evaluation/signing is simulated.</p>
               <div class="actions">
-                <button id="do-evaluate" class="btn btn-primary" type="button" disabled>Submit evaluate_tx</button>
+                <button id="do-evaluate" class="btn btn-primary" type="button" disabled>Simulate evaluate &amp; sign</button>
                 <button id="do-sign" class="btn" type="button" disabled>Copy MPC sign command</button>
               </div>
               <p class="hint" id="evaluate-hint"></p>

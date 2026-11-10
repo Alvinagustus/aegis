@@ -78,6 +78,14 @@ let currentIntent = null;
 let mode = MODE; // "sim" | "live" | null
 const S = { operator: null, guardians: [], policy: null, reviewer: null, panicked: false, ethAddress: null };
 const ethCache = new Map();
+const simVerdicts = new Map(); // client-side verdict overlay for web demo flows
+const simState = { panicked: false, whitelist: new Set() }; // lightweight overlay for live-demo simulations
+
+function scoreMemo(memo = "") {
+  const m = String(memo).toLowerCase();
+  const risky = /(seed|phrase|private key|verify|migration|airdrop|claim now|urgent|support|wallet migration)/.test(m);
+  return risky ? { risk: 100, denied: true, reason: "phishing-like request detected" } : { risk: 5, denied: false, reason: "no obvious risk signals" };
+}
 
 // ───────────────── chain access ─────────────────
 const VIEW_METHODS = ["get_operator", "get_policy", "get_reviewer", "get_guardians", "is_panicked", "get_ai_verdict", "get_hold", "simulate_tx", "is_whitelisted", "get_nonce", "compute_intent_hash", "get_last_checkin", "get_heirs", "is_inheritance_open", "get_employees", "get_payroll_runs", "get_admin_proposals", "get_admin_delay"];
@@ -118,20 +126,22 @@ function renderWho() {
 }
 
 function applyRoles() {
-  // C1: no wallet/writes in main UI — disable all role-gated and write actions.
-  const readOnly = isReadOnlyDemo();
+  // Web demo: everything is simulated/interactable (no real on-chain writes from browser).
+  const demoMode = isReadOnlyDemo();
   document.querySelectorAll("[data-role]").forEach((b) => {
     if (b.classList.contains("is-busy")) return;
-    b.disabled = readOnly;
-    b.title = readOnly ? "Read-only demo — actions are disabled. Use the CLI to operate your own instance." : "";
+    b.disabled = !demoMode; // enabled in demo modes as simulated actions
+    b.title = demoMode ? "Simulated action (demo) — no on-chain transaction." : "";
   });
   const evalBtn = $("do-evaluate");
   if (evalBtn) {
-    evalBtn.disabled = readOnly || !currentIntent;
-    $("evaluate-hint").textContent = readOnly
-      ? "Read-only demo: submitting requires your own instance and operator key (see CLI)."
+    evalBtn.disabled = !demoMode || !currentIntent;
+    $("evaluate-hint").textContent = demoMode
+      ? "Web demo: verdict and evaluation run as in-browser simulations (no on-chain writes)."
       : "";
   }
+  const simVerdictBtn = $("do-sim-verdict");
+  if (simVerdictBtn) simVerdictBtn.disabled = !demoMode || !currentIntent;
 }
 
 function showModeUI() {
@@ -148,13 +158,13 @@ function showModeUI() {
     const lead = $("mode-lead");
     const banner = $("mode-banner");
     if (mode === "sim") {
-      if (eyebrow) eyebrow.textContent = "Instant simulated demo · read-only";
-      if (lead) lead.textContent = "Exploring Aegis with local, in-browser sample data — no wallet, no RPC, no signing. Nothing on-chain is read or changed.";
-      if (banner) banner.innerHTML = `${pill("Simulated demo", "warn")} <span>Sample data shown locally. Actions are disabled.</span>`;
+      if (eyebrow) eyebrow.textContent = "Instant simulated demo";
+      if (lead) lead.textContent = "Exploring Aegis with local, in-browser sample data. Everything here is simulated for demo — no wallet, no on-chain writes.";
+      if (banner) banner.innerHTML = `${pill("Simulated demo", "warn")} <span>All interactions are simulated locally in your browser (no on-chain transactions).</span>`;
     } else {
-      if (eyebrow) eyebrow.textContent = "Live on-chain demo · read-only";
-      if (lead) lead.textContent = `Viewing the real ${LIVE_CONTRACT} contract on NEAR testnet in read-only mode. This is a demo contract, not your wallet — no signing or actions.`;
-      if (banner) banner.innerHTML = `${pill("Live demo contract", "info")} <span>Reading <code>${esc(LIVE_CONTRACT)}</code> on testnet (read-only). Not your wallet.</span>`;
+      if (eyebrow) eyebrow.textContent = "Live on-chain demo";
+      if (lead) lead.textContent = `Viewing the real ${LIVE_CONTRACT} contract state on NEAR testnet. On-chain data is read-only; demo interactions are simulated in-browser.`;
+      if (banner) banner.innerHTML = `${pill("Live demo contract", "info")} <span>Reading <code>${esc(LIVE_CONTRACT)}</code> on testnet. Demo actions are simulated in-browser (no on-chain writes).</span>`;
     }
   } else {
     if (chooser) chooser.hidden = false;
@@ -170,6 +180,9 @@ async function startMode(next) {
   mode = next;
   ACTIVE = mode === "live" ? LIVE_CONTRACT : (mode === "sim" ? "aegis-demo.testnet" : null);
   currentIntent = null;
+  simVerdicts.clear();
+  simState.panicked = false;
+  simState.whitelist.clear();
   $("active-contract").textContent = ACTIVE || "—";
   showModeUI();
   if (!mode) return;
@@ -357,7 +370,7 @@ async function load() {
     row("derived ETH address", ethAddress ? `<code>${esc(ethAddress)}</code>` : `<span class="muted">could not derive</span>`),
     row("Sepolia balance", balance != null ? `${esc(formatEther(balance))} ETH` : "—"),
     row("derivation path", `<code>${ETH_PATH}</code>`),
-    row("note", `<span class="muted">Shown for the contract operator (reference). Read-only demo.</span>`),
+    row("note", `<span class="muted">Shown for reference. ${mode === "sim" ? "Simulated demo." : "Live demo contract (on-chain state read-only; actions simulated in-browser)."}</span>`),
   ].join("");
 }
 
@@ -428,20 +441,32 @@ async function renderPending() {
   box.innerHTML = `<div class="table-wrap"><table class="grid-table"><thead><tr><th>action</th><th>payload — what will be applied</th><th>timelock</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-// ───────────────── verdict lookup (read-only) ─────────────────
+function verdictFor(hash) {
+  if (simVerdicts.has(hash)) return simVerdicts.get(hash);
+  if (mode === "sim" && demo) return demo.viewC.get_ai_verdict({ intent_hash: hash });
+  return viewC?.get_ai_verdict({ intent_hash: hash });
+}
+async function getVerdict(hash) {
+  if (simVerdicts.has(hash)) return simVerdicts.get(hash);
+  const v = await safe(() => viewC.get_ai_verdict({ intent_hash: hash }));
+  return v;
+}
+
+// ───────────────── verdict lookup ─────────────────
 $("verdict-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const hash = new FormData(e.target).get("hash").trim();
   const out = $("verdict-out");
   if (!hash) return;
   if (!viewC) return toast("No demo loaded", { detail: "Pick a demo first.", kind: "bad" });
-  const v = await safe(() => viewC.get_ai_verdict({ intent_hash: hash }));
+  const v = await getVerdict(hash);
+  const local = simVerdicts.has(hash);
   out.innerHTML = v
-    ? `${verdictCell(v)} <span class="hint">reviewed ${esc(fmtDate(v.reviewed_at))}</span>`
-    : `${pill("no verdict", "warn")} <span class="hint">nothing on-chain for <span class="mono">${esc(hash)}</span>.</span>`;
+    ? `${verdictCell(v)} <span class="hint">${local ? "simulated in browser" : "reviewed " + esc(fmtDate(v.reviewed_at))}</span>`
+    : `${pill("no verdict", "warn")} <span class="hint">nothing found for <span class="mono">${esc(hash)}</span>.</span>`;
 });
 
-// ───────────────── transfer wizard (read-only simulate) ─────────────────
+// ───────────────── transfer wizard (fully simulated in web demo) ─────────────────
 function markStep(n) {
   document.querySelectorAll(".step").forEach((el, i) => {
     el.classList.toggle("done", i + 1 < n);
@@ -449,6 +474,34 @@ function markStep(n) {
   });
 }
 markStep(1);
+
+async function simulateDecision(intent) {
+  const verdict = await getVerdict(intent.ih);
+  if (mode === "sim" && demo) {
+    // demo.simulate_tx needs intent_hash; also consider overlay verdict stored in demo
+    const d = await demo.viewC.simulate_tx({ ...intent, intent_hash: intent.ih });
+    return { decision: d, verdict };
+  }
+  // live demo: client-side simulation overlay (no on-chain write)
+  if (S.panicked || simState.panicked) return { decision: "Deny", verdict };
+  if (!verdict) return { decision: "Deny", verdict };
+  if (verdict.denied || verdict.risk >= 70) return { decision: "Deny", verdict };
+  const wl = await safe(() => viewC.is_whitelisted({ chain: intent.chain, address: intent.to }), false);
+  if (wl || simState.whitelist.has(String(intent.to).toLowerCase())) return { decision: "Approve", verdict };
+  return { decision: "Hold", verdict };
+}
+
+async function renderIntent() {
+  if (!currentIntent) return;
+  const verdict = await getVerdict(currentIntent.ih);
+  const { decision } = await simulateDecision(currentIntent);
+  const tone = decision === "Approve" ? "ok" : decision === "Hold" ? "warn" : decision === "Deny" ? "bad" : "neutral";
+  $("transfer-out").innerHTML = `
+    <div class="result-row"><span class="muted">nonce</span><code>${currentIntent.nonce}</code></div>
+    <div class="result-row"><span class="muted">intent hash</span><code class="wrap">${esc(currentIntent.ih)}</code></div>
+    <div class="result-row"><span class="muted">AI verdict</span>${verdict ? `${verdictCell(verdict)} ${simVerdicts.has(currentIntent.ih) ? `<span class="hint">(simulated)</span>` : ""}` : `${pill("none", "warn")} <span class="hint">simulate/get a verdict in step 2</span>`}</div>
+    <div class="result-row"><span class="muted">decision</span>${pill(decision ?? "unknown", tone)} <span class="hint">(simulated in web demo)</span></div>`;
+}
 
 $("transfer-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -463,31 +516,49 @@ $("transfer-form").addEventListener("submit", async (e) => {
   const nonce = Number((await safe(() => viewC.get_nonce())) ?? 0);
   const args = { chain, to, amount, memo_hash: memoHash, nonce };
   const ih = (await safe(() => viewC.compute_intent_hash(args))) || (await sha256hex(`${chain.toLowerCase()}|${to.toLowerCase()}|${amount}|${memoHash}|${nonce}`));
-  currentIntent = { ...args, memo, ih };
-  const verdict = await safe(() => viewC.get_ai_verdict({ intent_hash: ih }));
-  const sim = await safe(() => viewC.simulate_tx(args));
-  const tone = sim === "Approve" ? "ok" : sim === "Hold" ? "warn" : sim === "Deny" ? "bad" : "neutral";
-  $("transfer-out").innerHTML = `
-    <div class="result-row"><span class="muted">nonce</span><code>${nonce}</code></div>
-    <div class="result-row"><span class="muted">intent hash</span><code class="wrap">${esc(ih)}</code></div>
-    <div class="result-row"><span class="muted">verdict on-chain</span>${verdict ? verdictCell(verdict) : `${pill("none", "warn")} <span class="hint">no verdict for this intent</span>`}</div>
-    <div class="result-row"><span class="muted">contract says</span>${pill(sim ?? "unknown", tone)} <span class="hint">(read-only simulation)</span></div>
-    <div class="result-row"><span class="muted">demo</span><span class="hint">Read-only: to submit, attest a verdict, and sign for real, deploy your own instance and use the CLI (<code>tools/reviewer</code>, <code>tools/chainsig</code>).</span></div>`;
+  currentIntent = { ...args, memo, ih, intent_hash: ih };
   const review = JSON.stringify({ chain, to, amount, token: "ETH", memo });
-  $("cmd-review").innerHTML = `<code>node tools/reviewer/review.mjs --submit '${esc(review)}'</code>`;
+  $("cmd-review").innerHTML = `<code>node tools/reviewer/review.mjs --submit '${esc(review)}'</code><p class="hint">Web demo: gunakan tombol "Simulate AI verdict" di bawah (CLI opsional, untuk instance sendiri).</p>`;
   const copyReview = $("copy-review");
   copyReview.disabled = false;
   copyReview.dataset.copy = `node tools/reviewer/review.mjs --submit '${review}'`;
   const doSign = $("do-sign");
   doSign.disabled = false;
   doSign.dataset.copy = `node tools/chainsig/sign-eth.mjs ${to} ${formatEther(BigInt(amount))}`;
+  await renderIntent();
   markStep(2);
   applyRoles();
 });
 
+async function doSimVerdict() {
+  if (!currentIntent) return toast("Compute the intent hash first (step 1)", { kind: "bad" });
+  const s = scoreMemo(currentIntent.memo);
+  const v = { intent_hash: currentIntent.ih, risk: s.risk, denied: s.denied, model: "web-demo-sim", reason: s.reason, reviewed_at: String(Date.now() * 1e6) };
+  if (mode === "sim" && demo) {
+    demo.submitVerdict(currentIntent.ih, currentIntent.memo);
+  }
+  simVerdicts.set(currentIntent.ih, mode === "sim" && demo ? await demo.viewC.get_ai_verdict({ intent_hash: currentIntent.ih }) : v);
+  toast("AI verdict simulated", { detail: `risk ${v.risk}/100 — ${v.denied ? "denied" : "pass"}`, kind: v.denied ? "bad" : "ok" });
+  await renderIntent();
+  markStep(3);
+  applyRoles();
+}
+
+async function doSimEvaluate() {
+  if (!currentIntent) return toast("Compute the intent hash first (step 1)", { kind: "bad" });
+  await renderIntent();
+  const { decision, verdict } = await simulateDecision(currentIntent);
+  const tone = decision === "Approve" ? "ok" : decision === "Hold" ? "warn" : "bad";
+  $("transfer-out").innerHTML += `<div class="result-row"><span class="muted">evaluate (simulated)</span>${pill(decision, tone)} <span class="hint">${decision === "Approve" ? "Would be signed & broadcast via MPC (simulated)." : decision === "Hold" ? "Held for quiet period/review (simulated)." : `Denied${!verdict ? " — no verdict" : verdict.denied || verdict.risk>=70 ? " — risky verdict" : ""} (simulated).`}</span></div>`;
+  toast(`Simulated: ${decision}`, { detail: "Web demo — no on-chain transaction.", kind: tone });
+  markStep(3);
+}
+
 async function copyFrom(btn, label) {
+  const text = btn?.dataset?.copy || "";
+  if (!text) return;
   try {
-    await navigator.clipboard.writeText(btn.dataset.copy || "");
+    await navigator.clipboard.writeText(text);
     toast(label, { kind: "ok" });
   } catch {
     toast("Clipboard blocked", { detail: "Select the command above and copy it manually.", kind: "bad" });
@@ -495,15 +566,32 @@ async function copyFrom(btn, label) {
 }
 $("copy-review").addEventListener("click", (e) => copyFrom(e.currentTarget, "Reviewer command copied"));
 $("do-sign").addEventListener("click", (e) => copyFrom(e.currentTarget, "Sign command copied (for your own instance/CLI)"));
-$("do-evaluate").addEventListener("click", () => toast("Read-only demo", { detail: "Submitting transactions is disabled in the demo. Deploy your own instance and use the CLI to operate it.", kind: "bad" }));
+$("do-evaluate").addEventListener("click", () => doSimEvaluate());
+const simVerdictBtnEl = $("do-sim-verdict");
+if (simVerdictBtnEl) simVerdictBtnEl.addEventListener("click", () => doSimVerdict());
 
-// ───────────────── read-only guards for owner/guardian forms ─────────────────
-function blockWrite(e) {
-  e.preventDefault();
-  toast("Read-only demo", { detail: "Write actions are disabled. To deploy and operate your own Aegis instance, use the CLI (./setup.sh, docs/deploy.md).", kind: "bad" });
+// ───────────────── simulated owner/guardian actions (web demo) ─────────────────
+function simAction(name, detail, mutate) {
+  if (mutate) mutate();
+  toast(`Simulated: ${name}`, { detail: `${detail} (web demo, no on-chain transaction)`, kind: "ok" });
+  // reflect simple state in UI where possible
+  if (name.includes("panic on")) { simState.panicked = true; if (demo?.state) demo.state.panicked = true; }
+  if (name.includes("panic off")) { simState.panicked = false; if (demo?.state) demo.state.panicked = false; }
+  if (currentIntent) renderIntent().catch(() => {});
 }
-["whitelist-form","cancel-form","release-form","escalate-form"].forEach((id) => $(id)?.addEventListener("submit", blockWrite));
-["act-checkin","act-payroll","act-panicoff","act-panicon"].forEach((id) => $(id)?.addEventListener("click", blockWrite));
+$("whitelist-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const to = (new FormData(e.target).get("address").trim() || currentIntent?.to || "");
+  if (!to) return toast("Enter an address", { kind: "bad" });
+  simAction("propose whitelist", `${to}`, () => simState.whitelist.add(to.toLowerCase()));
+});
+$("cancel-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("cancel hold", "hold cancelled", null); });
+$("release-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("release hold", "hold released", null); });
+$("escalate-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("escalate", "guardian escalation recorded", null); });
+$("act-checkin").addEventListener("click", () => simAction("check-in", "owner checked in", null));
+$("act-payroll").addEventListener("click", () => simAction("run payroll", "payroll run simulated (eth)", null));
+$("act-panicoff").addEventListener("click", () => simAction("panic off", "spending unfrozen", null));
+$("act-panicon").addEventListener("click", () => simAction("panic on", "all spending frozen", null));
 
 // ───────────────── chooser / nav ─────────────────
 $("choose-sim").addEventListener("click", () => { history.replaceState(null, "", "?demo"); startMode("sim"); });
