@@ -79,7 +79,15 @@ let mode = MODE; // "sim" | "live" | null
 const S = { operator: null, guardians: [], policy: null, reviewer: null, panicked: false, ethAddress: null };
 const ethCache = new Map();
 const simVerdicts = new Map(); // client-side verdict overlay for web demo flows
-const simState = { panicked: false, whitelist: new Set() }; // lightweight overlay for live-demo simulations
+const simState = {
+  panicked: false,
+  whitelist: new Set(),
+  extraHolds: [], // {id, ...} for live-demo capsules/holds created in-browser
+  nextHoldId: 1000,
+  employees: null, // null = use chain; array = overlay list
+  payrollRunsDelta: 0,
+  inheritance: null, // {lastCheckin, heirs, open, timeoutNs} overlay for live demo
+};
 
 function scoreMemo(memo = "") {
   const m = String(memo).toLowerCase();
@@ -183,6 +191,11 @@ async function startMode(next) {
   simVerdicts.clear();
   simState.panicked = false;
   simState.whitelist.clear();
+  simState.extraHolds = [];
+  simState.nextHoldId = 1000;
+  simState.employees = null;
+  simState.payrollRunsDelta = 0;
+  simState.inheritance = null;
   $("active-contract").textContent = ACTIVE || "—";
   showModeUI();
   if (!mode) return;
@@ -348,20 +361,30 @@ async function load() {
   await renderHolds();
   await renderPending();
 
-  const [lastCheckin, heirs, inheritanceOpen, employees, payrollRuns] = await Promise.all([
+  let [lastCheckin, heirs, inheritanceOpen, employees, payrollRuns] = await Promise.all([
     safe(() => viewC.get_last_checkin()),
     safe(() => viewC.get_heirs(), []),
     safe(() => viewC.is_inheritance_open()),
     safe(() => viewC.get_employees(), []),
     safe(() => viewC.get_payroll_runs()),
   ]);
+  // apply web-demo overlays (live mode) so simulated actions are visible
+  if (mode === "live" && simState.inheritance) {
+    lastCheckin = simState.inheritance.lastCheckin ?? lastCheckin;
+    heirs = simState.inheritance.heirs ?? heirs;
+    inheritanceOpen = simState.inheritance.open ?? inheritanceOpen;
+  }
+  if (mode === "live" && simState.employees) employees = simState.employees;
+  if (mode === "live" && payrollRuns != null) payrollRuns = Number(payrollRuns) + simState.payrollRunsDelta;
+
   $("inheritance").innerHTML = [
     row("last check-in", fmtDate(lastCheckin)),
     row("heirs", (heirs || []).length ? heirs.map(esc).join("<br>") : `<span class="muted">none</span>`),
     row("state", inheritanceOpen ? pill("open — heirs whitelisted", "warn") : pill("closed (owner active)", "ok")),
   ].join("");
+  const empList = employees || [];
   $("payroll").innerHTML = [
-    row("employees", (employees || []).length ? employees.map((e) => `${esc(e.address)} — ${fmtEth(e.salary)} ETH/run`).join("<br>") : `<span class="muted">none</span>`),
+    row("employees", empList.length ? empList.map((e) => `${esc(e.address)} — ${fmtEth(e.salary)} ETH/run`).join("<br>") : `<span class="muted">none</span>`),
     row("payroll runs", esc(payrollRuns ?? "—")),
   ].join("");
 
@@ -391,7 +414,8 @@ async function renderHolds() {
   const box = $("holds");
   const rows = [];
   let misses = 0;
-  for (let id = 1; id <= HOLD_SCAN_LIMIT && misses < 2; id++) {
+  const scanLimit = mode === "sim" ? 50 : HOLD_SCAN_LIMIT;
+  for (let id = 1; id <= scanLimit && (mode === "sim" ? id < (demo?.state?.nextHoldId || 50) : misses < 2); id++) {
     const h = await safe(() => viewC.get_hold({ id }));
     if (!h) { misses++; continue; }
     misses = 0;
@@ -406,6 +430,22 @@ async function renderHolds() {
       <td>${pill(st, kind)}</td>
       <td class="muted">${capsule ? `opens ${esc(fmtDate(h.capsule_release_at))}${h.message ? ` · “${esc(h.message)}”` : ""}` : `${(h.escrow || []).length} guardian vote(s)`}</td>
     </tr>`);
+  }
+  // live-demo in-browser capsules/holds overlay
+  if (mode === "live" && simState.extraHolds.length) {
+    for (const { id, h } of simState.extraHolds) {
+      const capsule = Number(h.capsule_release_at) > 0;
+      const st = statusLabel(h.status);
+      const kind = /Cancelled/.test(st) ? "bad" : /Released/.test(st) ? "ok" : /Cleared/.test(st) ? "info" : "neutral";
+      rows.push(`<tr>
+        <td class="mono">#${id} <span class="hint">(sim)</span></td>
+        <td>${capsule ? pill("capsule", "info") : pill("hold")}</td>
+        <td class="mono wrap">${esc(h.chain)} → ${esc(h.to)}</td>
+        <td class="mono">${fmtEth(h.amount)} ETH</td>
+        <td>${pill(st, kind)}</td>
+        <td class="muted">${capsule ? `opens ${esc(fmtDate(h.capsule_release_at))}${h.message ? ` · “${esc(h.message)}”` : ""}` : `${(h.escrow || []).length} guardian vote(s)`} <span class="hint">(simulated)</span></td>
+      </tr>`);
+    }
   }
   box.innerHTML = rows.length
     ? `<div class="table-wrap"><table class="grid-table"><thead><tr><th>id</th><th>type</th><th>transfer</th><th>amount</th><th>status</th><th>details</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
@@ -570,31 +610,211 @@ $("do-evaluate").addEventListener("click", () => doSimEvaluate());
 const simVerdictBtnEl = $("do-sim-verdict");
 if (simVerdictBtnEl) simVerdictBtnEl.addEventListener("click", () => doSimVerdict());
 
-// ───────────────── simulated owner/guardian actions (web demo) ─────────────────
-function simAction(name, detail, mutate) {
-  if (mutate) mutate();
-  toast(`Simulated: ${name}`, { detail: `${detail} (web demo, no on-chain transaction)`, kind: "ok" });
-  // reflect simple state in UI where possible
-  if (name.includes("panic on")) { simState.panicked = true; if (demo?.state) demo.state.panicked = true; S.panicked = true; }
-  if (name.includes("panic off")) { simState.panicked = false; if (demo?.state) demo.state.panicked = false; S.panicked = false; }
-  if (currentIntent) renderIntent().catch(() => {});
+// ───────────────── simulated owner/guardian/mode actions (web demo) ─────────────────
+async function refreshDemoViews() {
+  if (currentIntent) await renderIntent().catch(() => {});
+  await renderHolds().catch(() => {});
+  // refresh inheritance/payroll panels from (possibly overlaid) state
+  const employees = mode === "sim" ? await safe(() => viewC.get_employees(), []) : (simState.employees ?? await safe(() => viewC.get_employees(), []));
+  let payrollRuns = await safe(() => viewC.get_payroll_runs());
+  if (mode === "live" && payrollRuns != null) payrollRuns = Number(payrollRuns) + simState.payrollRunsDelta;
+  const empList = employees || [];
+  $("payroll").innerHTML = [
+    row("employees", empList.length ? empList.map((e) => `${esc(e.address)} — ${fmtEth(e.salary)} ETH/run`).join("<br>") : `<span class="muted">none</span>`),
+    row("payroll runs", esc(payrollRuns ?? "—")),
+  ].join("");
+  let lastCheckin = await safe(() => viewC.get_last_checkin());
+  let heirs = await safe(() => viewC.get_heirs(), []);
+  let inheritanceOpen = await safe(() => viewC.is_inheritance_open());
+  if (mode === "live" && simState.inheritance) {
+    lastCheckin = simState.inheritance.lastCheckin ?? lastCheckin;
+    heirs = simState.inheritance.heirs ?? heirs;
+    inheritanceOpen = simState.inheritance.open ?? inheritanceOpen;
+  }
+  $("inheritance").innerHTML = [
+    row("last check-in", fmtDate(lastCheckin)),
+    row("heirs", (heirs || []).length ? heirs.map(esc).join("<br>") : `<span class="muted">none</span>`),
+    row("state", inheritanceOpen ? pill("open — heirs whitelisted", "warn") : pill("closed (owner active)", "ok")),
+  ].join("");
 }
+
 $("whitelist-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const to = (new FormData(e.target).get("address").trim() || currentIntent?.to || "").toLowerCase();
   if (!to) return toast("Enter an address", { kind: "bad" });
   simState.whitelist.add(to);
   if (demo?.state?.whitelist) demo.state.whitelist.add(to);
-  toast("Simulated: whitelist", { detail: `${to} ditambahkan ke whitelist (simulasi demo). Coba evaluate lagi untuk melihat efeknya.`, kind: "ok" });
+  toast("Simulated: whitelist", { detail: `${to} ditambahkan ke whitelist (simulasi). Coba evaluate lagi untuk efeknya.`, kind: "ok" });
   if (currentIntent) renderIntent().catch(() => {});
 });
-$("cancel-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("cancel hold", "hold cancelled", null); });
-$("release-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("release hold", "hold released", null); });
-$("escalate-form").addEventListener("submit", (e) => { e.preventDefault(); simAction("escalate", "guardian escalation recorded", null); });
-$("act-checkin").addEventListener("click", () => simAction("check-in", "owner checked in", null));
-$("act-payroll").addEventListener("click", () => simAction("run payroll", "payroll run simulated (eth)", null));
-$("act-panicoff").addEventListener("click", () => simAction("panic off", "spending unfrozen", null));
-$("act-panicon").addEventListener("click", () => simAction("panic on", "all spending frozen", null));
+$("cancel-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = Number(new FormData(e.target).get("id"));
+  if (mode === "sim" && demo?.state?.holds?.[id]) demo.state.holds[id].status = "Cancelled";
+  if (mode === "live") { const x = simState.extraHolds.find((h) => h.id === id); if (x) x.h.status = "Cancelled"; }
+  toast("Simulated: cancel hold", { detail: `Hold #${id || "?"} (simulasi).`, kind: "ok" });
+  await refreshDemoViews();
+});
+$("release-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = Number(new FormData(e.target).get("id"));
+  if (mode === "sim" && demo?.state?.holds?.[id]) demo.state.holds[id].status = "Released";
+  if (mode === "live") { const x = simState.extraHolds.find((h) => h.id === id); if (x) x.h.status = "Released"; }
+  toast("Simulated: release hold", { detail: `Hold #${id || "?"} (simulasi).`, kind: "ok" });
+  await refreshDemoViews();
+});
+$("escalate-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = Number(new FormData(e.target).get("id"));
+  toast("Simulated: escalate", { detail: `Guardian escalation untuk hold #${id || "?"} (simulasi).`, kind: "ok" });
+  await refreshDemoViews();
+});
+$("act-checkin").addEventListener("click", async () => {
+  if (mode === "sim" && demo) demo.checkIn();
+  const nowNs = String(Date.now() * 1e6);
+  simState.inheritance = { ...(simState.inheritance || {}), lastCheckin: nowNs, open: false, heirs: simState.inheritance?.heirs || (await safe(() => viewC.get_heirs(), [])) };
+  toast("Simulated: check-in", { detail: "Owner check-in (simulasi). Inheritance ditutup.", kind: "ok" });
+  await refreshDemoViews();
+});
+$("act-payroll").addEventListener("click", async () => {
+  try {
+    if (mode === "sim" && demo) demo.runPayroll();
+    else simState.payrollRunsDelta += 1;
+    toast("Simulated: run payroll", { detail: "Payroll batch (eth) disimulasikan.", kind: "ok" });
+  } catch (err) { toast("Payroll failed", { detail: errMsg(err), kind: "bad" }); }
+  await refreshDemoViews();
+});
+$("act-panicoff").addEventListener("click", async () => {
+  simState.panicked = false; if (demo?.state) demo.state.panicked = false; S.panicked = false;
+  toast("Simulated: panic off", { detail: "Spending unfrozen (simulasi).", kind: "ok" });
+  renderShield(computeHealth()); await refreshDemoViews();
+});
+$("act-panicon").addEventListener("click", async () => {
+  simState.panicked = true; if (demo?.state) demo.state.panicked = true; S.panicked = true;
+  toast("Simulated: panic on", { detail: "All spending frozen (simulasi).", kind: "ok" });
+  renderShield(computeHealth()); await refreshDemoViews();
+});
+
+// Time capsule (simulated)
+const capsuleForm = $("capsule-form");
+if (capsuleForm) capsuleForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const chain = (fd.get("chain") || "eth").toString().trim();
+  const to = (fd.get("to") || "").toString().trim();
+  const amount = (fd.get("amount") || "0").toString().trim();
+  const minutes = Math.max(0, Number(fd.get("minutes") || 0));
+  const message = (fd.get("message") || "").toString();
+  if (!to || !/^\d+$/.test(amount)) return toast("Invalid capsule", { detail: "Isi alamat tujuan dan amount (wei).", kind: "bad" });
+  const releaseAt = Date.now() * 1e6 + Math.round(minutes * 60 * 1e9);
+  try {
+    if (mode === "sim" && demo) {
+      const id = demo.createCapsule({ chain, to, amount, release_at_ns: String(releaseAt), message });
+      toast("Simulated: capsule created", { detail: `Capsule #${id} sealed (opens ${fmtDate(releaseAt)}).`, kind: "ok" });
+    } else {
+      const id = simState.nextHoldId++;
+      simState.extraHolds.push({ id, h: { chain, to, amount, requested_at: Date.now() * 1e6, status: "Pending", escrow: [], capsule_release_at: releaseAt, message } });
+      toast("Simulated: capsule created", { detail: `Capsule #${id} (simulasi, opens ${fmtDate(releaseAt)}).`, kind: "ok" });
+    }
+  } catch (err) { toast("Capsule failed", { detail: errMsg(err), kind: "bad" }); }
+  await refreshDemoViews();
+});
+
+const releaseCapsuleForm = $("release-capsule-form");
+if (releaseCapsuleForm) releaseCapsuleForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = Number(new FormData(e.target).get("id"));
+  try {
+    if (mode === "sim" && demo) {
+      // allow demo release even if "time" hasn't passed in wall clock by forcing if sealed past
+      const h = demo.state.holds[id];
+      if (h && Date.now() * 1e6 < Number(h.capsule_release_at)) {
+        // simulate time passing for demo convenience
+        h.capsule_release_at = Date.now() * 1e6 - 1;
+      }
+      demo.releaseCapsule(id);
+    } else {
+      const x = simState.extraHolds.find((h) => h.id === id);
+      if (!x) throw new Error("capsule not found (simulated)");
+      if (!(Number(x.h.capsule_release_at) > 0)) throw new Error("not a capsule");
+      x.h.status = "Released";
+    }
+    toast("Simulated: capsule released", { detail: `Capsule #${id} released (simulasi).`, kind: "ok" });
+  } catch (err) { toast("Release failed", { detail: errMsg(err), kind: "bad" }); }
+  await refreshDemoViews();
+});
+
+// Payroll add employee (simulated)
+const employeeForm = $("employee-form");
+if (employeeForm) employeeForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const address = (fd.get("address") || "").toString().trim();
+  const salary = (fd.get("salary") || "0").toString().trim();
+  if (!address || !/^\d+$/.test(salary)) return toast("Invalid employee", { detail: "Isi address dan salary (wei).", kind: "bad" });
+  if (mode === "sim" && demo) {
+    demo.addEmployee(address, salary);
+  } else {
+    const cur = simState.employees || (await safe(() => viewC.get_employees(), [])) || [];
+    const list = cur.map((e) => ({ ...e }));
+    const ex = list.find((e) => String(e.address).toLowerCase() === address.toLowerCase());
+    if (ex) { ex.salary = salary; ex.active = true; } else list.push({ address, salary, active: true });
+    simState.employees = list;
+  }
+  toast("Simulated: employee added", { detail: `${address} — ${fmtEth(salary)} ETH/run (simulasi).`, kind: "ok" });
+  await refreshDemoViews();
+});
+
+// Digital inheritance (simulated) — different from time capsule (dead-man's-switch)
+const inhCheckin = $("act-inh-checkin");
+if (inhCheckin) inhCheckin.addEventListener("click", async () => {
+  if (mode === "sim" && demo) demo.checkIn();
+  const nowNs = String(Date.now() * 1e6);
+  const heirs = simState.inheritance?.heirs || (await safe(() => viewC.get_heirs(), [])) || [];
+  simState.inheritance = { ...(simState.inheritance || {}), lastCheckin: nowNs, open: false, heirs };
+  toast("Simulated: check-in", { detail: "Owner heartbeat tercatat; inheritance ditutup (simulasi).", kind: "ok" });
+  await refreshDemoViews();
+});
+const inhSilent = $("act-inh-silent");
+if (inhSilent) inhSilent.addEventListener("click", async () => {
+  if (mode === "sim" && demo) { demo.makeOwnerSilent(); }
+  const timeout = 90n * 86_400_000_000_000n; // demo/default window
+  const past = String(Date.now() * 1e6 - Number(timeout + 86_400_000_000_000n));
+  const heirs = simState.inheritance?.heirs || (mode === "sim" ? demo?.state?.heirs : await safe(() => viewC.get_heirs(), [])) || [];
+  simState.inheritance = { ...(simState.inheritance || {}), lastCheckin: past, open: false, heirs, timeoutNs: Number(timeout) };
+  toast("Simulated: owner silent", { detail: "Waktu check-in dibuat lewat timeout (simulasi) — inheritance bisa di-claim.", kind: "warn" });
+  await refreshDemoViews();
+});
+const inhClaim = $("act-inh-claim");
+if (inhClaim) inhClaim.addEventListener("click", async () => {
+  try {
+    if (mode === "sim" && demo) {
+      demo.claimInheritance();
+    } else {
+      const last = BigInt(simState.inheritance?.lastCheckin || (await safe(() => viewC.get_last_checkin())) || 0);
+      const timeout = BigInt(simState.inheritance?.timeoutNs || 90n * 86_400_000_000_000n);
+      const heirs = simState.inheritance?.heirs || (await safe(() => viewC.get_heirs(), [])) || [];
+      if (!heirs.length) throw new Error("no heirs configured");
+      if (BigInt(Date.now() * 1e6) - last < timeout) throw new Error("owner still active (simulate 'owner silent' first)");
+      if (simState.inheritance?.open) throw new Error("already open");
+      simState.inheritance = { ...(simState.inheritance || {}), lastCheckin: String(last), heirs, open: true };
+      for (const h of heirs) simState.whitelist.add(String(h).toLowerCase());
+    }
+    toast("Simulated: inheritance claimed", { detail: "Estate dibuka; heirs di-whitelist (simulasi).", kind: "ok" });
+  } catch (err) { toast("Claim failed", { detail: errMsg(err), kind: "bad" }); }
+  await refreshDemoViews();
+});
+const heirForm = $("heir-form");
+if (heirForm) heirForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const address = (new FormData(e.target).get("address") || "").toString().trim();
+  if (!address) return toast("Enter heir address", { kind: "bad" });
+  if (mode === "sim" && demo) demo.setHeirs([address]);
+  const heirs = [address];
+  simState.inheritance = { ...(simState.inheritance || {}), heirs, lastCheckin: simState.inheritance?.lastCheckin || (await safe(() => viewC.get_last_checkin())) || String(Date.now() * 1e6), open: false };
+  toast("Simulated: heir set", { detail: `${address} (simulasi).`, kind: "ok" });
+  await refreshDemoViews();
+});
 
 // ───────────────── chooser / nav ─────────────────
 $("choose-sim").addEventListener("click", () => { history.replaceState(null, "", "?demo"); startMode("sim"); });

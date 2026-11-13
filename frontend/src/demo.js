@@ -12,11 +12,18 @@ export function createDemo({ healthy = false } = {}) {
     panicked: false,
     whitelist: new Set(["0x7a250d5630b4cf539739df2c5dacb4c659f2488d"]),
     nonce: 3,
+    nextHoldId: 4,
     holds: {
       1: { chain: "eth", to: "0xabc0000000000000000000000000000000000001", amount: Y(0.001), requested_at: now() - 2 * DAY, status: { Cleared: { release_at: now() + 0.4 * DAY } }, escrow: ["aegis-guard1.testnet", "aegis-guard2.testnet"], capsule_release_at: 0, message: "" },
       2: { chain: "eth", to: "0x00000000000000000000000000000000000beef", amount: Y(0.05), requested_at: now() - 0.2 * DAY, status: "Pending", escrow: [], capsule_release_at: 0, message: "" },
       3: { chain: "eth", to: "0x1234567890abcdef1234567890abcdef12345678", amount: Y(1), requested_at: now() - 30 * DAY, status: "Pending", escrow: [], capsule_release_at: now() + 120 * DAY, message: "Happy 18th!" },
     },
+    employees: [{ address: "0xa1…c4", salary: Y(0.1), active: true }, { address: "0xb2…9e", salary: Y(0.2), active: true }],
+    payrollRuns: 1,
+    lastCheckin: now() - 12 * DAY,
+    heirs: ["0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"],
+    inheritanceOpen: false,
+    inheritanceTimeout: 90 * DAY,
   };
   const verdicts = {};
 
@@ -50,11 +57,11 @@ export function createDemo({ healthy = false } = {}) {
     async get_hold({ id }) { return state.holds[id] ?? null; },
     async simulate_tx(args) { return simulateFor({ ...args, intent_hash: args.intent_hash || null }); },
     async is_whitelisted({ address }) { return state.whitelist.has(String(address).toLowerCase()); },
-    async get_last_checkin() { return String(now() - 12 * DAY); },
-    async get_heirs() { return ["0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"]; },
-    async is_inheritance_open() { return false; },
-    async get_employees() { return [{ address: "0xa1…c4", salary: Y(0.1), active: true }, { address: "0xb2…9e", salary: Y(0.2), active: true }]; },
-    async get_payroll_runs() { return 1; },
+    async get_last_checkin() { return String(state.lastCheckin); },
+    async get_heirs() { return [...state.heirs]; },
+    async is_inheritance_open() { return !!state.inheritanceOpen; },
+    async get_employees() { return state.employees.map((e) => ({ ...e })); },
+    async get_payroll_runs() { return state.payrollRuns; },
     async get_admin_proposals() { return [["daily_limit:eth", "10000000000000000", String(now() - 0.5 * DAY)]]; },
     async get_admin_delay() { return String(DAY); },
   };
@@ -68,6 +75,59 @@ export function createDemo({ healthy = false } = {}) {
     const decision = simulateFor({ ...intent, intent_hash: intent.ih });
     if (decision === "Approve" || decision === "Hold" || decision === "Deny") state.nonce += 1;
     return { decision, verdict: verdicts[intent.ih] ?? null };
+  }
+  function createCapsule({ chain, to, amount, release_at_ns, message }) {
+    const id = state.nextHoldId++;
+    state.holds[id] = {
+      chain: chain || "eth",
+      to,
+      amount: String(amount),
+      requested_at: now(),
+      status: "Pending",
+      escrow: [],
+      capsule_release_at: Number(release_at_ns),
+      message: message || "",
+    };
+    return id;
+  }
+  function releaseCapsule(id) {
+    const h = state.holds[id];
+    if (!h) throw new Error("hold not found");
+    if (!(Number(h.capsule_release_at) > 0)) throw new Error("not a capsule");
+    if (h.status !== "Pending") throw new Error("capsule not pending");
+    if (now() < Number(h.capsule_release_at)) throw new Error("capsule still sealed");
+    h.status = "Released";
+    return h;
+  }
+  function addEmployee(address, salaryWei) {
+    const addr = String(address);
+    const existing = state.employees.find((e) => e.address.toLowerCase() === addr.toLowerCase());
+    if (existing) { existing.salary = String(salaryWei); existing.active = true; }
+    else state.employees.push({ address: addr, salary: String(salaryWei), active: true });
+  }
+  function runPayroll() {
+    if (!state.employees.filter((e) => e.active).length) throw new Error("no active employees");
+    state.payrollRuns += 1;
+    return state.payrollRuns;
+  }
+  function checkIn() {
+    state.lastCheckin = now();
+    state.inheritanceOpen = false;
+  }
+  function setHeirs(addresses) {
+    state.heirs = (addresses || []).map((a) => String(a)).filter(Boolean);
+  }
+  function makeOwnerSilent() {
+    state.lastCheckin = now() - state.inheritanceTimeout - DAY;
+  }
+  function claimInheritance() {
+    if (state.inheritanceOpen) throw new Error("already open");
+    if (now() - state.lastCheckin < state.inheritanceTimeout) throw new Error("owner still active");
+    if (!state.heirs.length) throw new Error("no heirs configured");
+    state.inheritanceOpen = true;
+    // whitelist heirs (simplified demo behavior)
+    for (const h of state.heirs) state.whitelist.add(String(h).toLowerCase());
+    return true;
   }
 
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -85,6 +145,6 @@ export function createDemo({ healthy = false } = {}) {
     viewC, wallet, me, operator, state,
     ethBalance: 190000000000000000n,
     ethAddress: "0x000000000000000000000000000000000000dEaD",
-    submitVerdict, evaluate, scoreMemo,
+    submitVerdict, evaluate, scoreMemo, createCapsule, releaseCapsule, addEmployee, runPayroll, checkIn, setHeirs, makeOwnerSilent, claimInheritance,
   };
 }

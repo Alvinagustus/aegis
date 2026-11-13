@@ -236,16 +236,49 @@
         <section class="card c-12" aria-labelledby="h-holds">
           <div class="card-head"><div><h2 id="h-holds">Holds &amp; time capsules</h2><p class="hint">First-seen addresses are held for a quiet period; capsules seal funds until a date.</p></div></div>
           <div id="holds" class="holds"></div>
+          <form id="capsule-form" class="form-grid" style="margin-top:16px">
+            <label>Chain <input name="chain" value="eth" required /></label>
+            <label>To <input name="to" placeholder="0x… recipient" required autocomplete="off" spellcheck="false" /></label>
+            <label>Amount (wei) <input name="amount" value="1000000000000000" inputmode="numeric" required /></label>
+            <label>Lock for (minutes) <input name="minutes" value="2" inputmode="numeric" required /></label>
+            <label style="grid-column:1/-1">Message (optional) <input name="message" placeholder="e.g. Happy 18th!" autocomplete="off" /></label>
+            <div class="form-action"><button class="btn btn-primary" type="submit" id="act-capsule" data-role="operator">Create time capsule (simulated)</button></div>
+          </form>
+          <form id="release-capsule-form" class="inline-form" style="margin-top:8px">
+            <label class="sr" for="release-capsule-id">Capsule id</label>
+            <input id="release-capsule-id" name="id" inputmode="numeric" placeholder="Capsule id to release (when time passed)" />
+            <button class="btn" type="submit" id="act-release-capsule" data-role="operator">Release capsule (simulated)</button>
+          </form>
+          <p class="hint">Web demo: pembuatan & pelepasan capsule disimulasikan in-browser (kontrak asli: <code>create_capsule</code>/<code>release_capsule</code>).</p>
         </section>
 
         <section class="card c-6" aria-labelledby="h-inh">
           <div class="card-head"><h2 id="h-inh">Digital inheritance</h2></div>
           <table id="inheritance" class="kv"></table>
+          <div class="actions" style="margin-top:12px">
+            <button id="act-inh-checkin" class="btn" type="button" data-role="operator">Check in (simulated)</button>
+            <button id="act-inh-silent" class="btn" type="button" data-role="operator">Simulate owner silent (demo)</button>
+            <button id="act-inh-claim" class="btn btn-primary" type="button" data-role="guardian">Claim inheritance (simulated)</button>
+          </div>
+          <form id="heir-form" class="inline-form" style="margin-top:8px">
+            <label class="sr" for="heir-address">Heir address</label>
+            <input id="heir-address" name="address" placeholder="0x… heir address (demo)" autocomplete="off" spellcheck="false" />
+            <button class="btn btn-sm" type="submit" id="act-heir" data-role="operator">Set heir (simulated)</button>
+          </form>
+          <p class="hint">Beda dengan capsule: inheritance = dead-man's-switch (check-in/timeout → guardian/heir claim membuka estate & whitelist heirs). Semua disimulasikan di web demo.</p>
         </section>
 
         <section class="card c-6" aria-labelledby="h-pay">
           <div class="card-head"><h2 id="h-pay">Payroll</h2></div>
           <table id="payroll" class="kv"></table>
+          <form id="employee-form" class="inline-form" style="margin-top:12px">
+            <label class="sr" for="employee-address">Employee address</label>
+            <input id="employee-address" name="address" placeholder="0x… employee" autocomplete="off" spellcheck="false" />
+            <label class="sr" for="employee-salary">Salary (wei)</label>
+            <input id="employee-salary" name="salary" placeholder="salary (wei)" inputmode="numeric" />
+            <button class="btn" type="submit" id="act-employee" data-role="operator">Add/update employee (simulated)</button>
+          </form>
+          <p class="hint">Web demo: tambah karyawan & run payroll disimulasikan. Kontrak asli: <code>propose_add_employee</code>/<code>apply_add_employee</code> (timelocked) lalu <code>run_payroll</code>.</p>
         </section>
 
         <section class="card c-12" aria-labelledby="h-chain">
