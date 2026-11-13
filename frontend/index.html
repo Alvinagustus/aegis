@@ -49,7 +49,7 @@
           <button id="choose-sim" class="btn btn-primary" type="button">Try instant simulated demo</button>
           <button id="choose-live" class="btn" type="button">View live on-chain demo (read-only)</button>
         </div>
-        <p class="hint">Semua interaksi di web demo disimulasikan (tanpa on-chain writes). Simulated berjalan lokal di browser; Live membaca state nyata <code>aegispolicy.testnet</code> di testnet. Untuk deploy/operasi instance sendiri, gunakan CLI — lihat <a href="https://github.com/Alvinagustus/aegis#build" target="_blank" rel="noreferrer">README</a>.</p>
+        <p class="hint">All interactions in the web demo are simulated (no on-chain writes). "Instant simulated" runs locally in your browser; "Live" reads the real <code>aegispolicy.testnet</code> state on testnet. To deploy and operate your own instance, use the CLI — see the <a href="https://github.com/Alvinagustus/aegis#build" target="_blank" rel="noreferrer">README</a>.</p>
       </div>
 
       <div class="shield-card" id="shield-chooser" data-state="idle">
@@ -249,7 +249,7 @@
             <input id="release-capsule-id" name="id" inputmode="numeric" placeholder="Capsule id to release (when time passed)" />
             <button class="btn" type="submit" id="act-release-capsule" data-role="operator">Release capsule (simulated)</button>
           </form>
-          <p class="hint">Web demo: pembuatan & pelepasan capsule disimulasikan in-browser (kontrak asli: <code>create_capsule</code>/<code>release_capsule</code>).</p>
+          <p class="hint">Web demo: capsule creation and release are simulated in-browser (on-chain: <code>create_capsule</code>/<code>release_capsule</code>).</p>
         </section>
 
         <section class="card c-6" aria-labelledby="h-inh">
@@ -265,7 +265,7 @@
             <input id="heir-address" name="address" placeholder="0x… heir address (demo)" autocomplete="off" spellcheck="false" />
             <button class="btn btn-sm" type="submit" id="act-heir" data-role="operator">Set heir (simulated)</button>
           </form>
-          <p class="hint">Beda dengan capsule: inheritance = dead-man's-switch (check-in/timeout → guardian/heir claim membuka estate & whitelist heirs). Semua disimulasikan di web demo.</p>
+          <p class="hint">Different from a time capsule: inheritance is a dead-man's switch (check-in/timeout → guardian/heir claim opens the estate and whitelists heirs). Fully simulated in the web demo.</p>
         </section>
 
         <section class="card c-6" aria-labelledby="h-pay">
@@ -278,7 +278,7 @@
             <input id="employee-salary" name="salary" placeholder="salary (wei)" inputmode="numeric" />
             <button class="btn" type="submit" id="act-employee" data-role="operator">Add/update employee (simulated)</button>
           </form>
-          <p class="hint">Web demo: tambah karyawan & run payroll disimulasikan. Kontrak asli: <code>propose_add_employee</code>/<code>apply_add_employee</code> (timelocked) lalu <code>run_payroll</code>.</p>
+          <p class="hint">Web demo: adding employees and running payroll are simulated. On-chain: <code>propose_add_employee</code>/<code>apply_add_employee</code> (timelocked) then <code>run_payroll</code>.</p>
         </section>
 
         <section class="card c-12" aria-labelledby="h-chain">
