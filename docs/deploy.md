@@ -76,3 +76,11 @@ near contract call-function as-transaction aegis.testnet apply_reviewer \
   json-args '{}' prepaid-gas '30 Tgas' attached-deposit '0 NEAR' \
   sign-as aegis-operator.testnet network-config testnet sign-with-keychain send
 ```
+
+
+## Verified on-chain (end-to-end)
+
+- **Contract-derived ETH address (`aegis.testnet`, path `ethereum-1`):** `0xf834cac35845704a6648ab033cc99641e4bc4b1e`
+- **`submit_verdict`:** [BVuajgvNGkqqLmeNou785V85K7cQ3vL3qeyJxKv7hTgV](https://explorer.testnet.near.org/transactions/BVuajgvNGkqqLmeNou785V85K7cQ3vL3qeyJxKv7hTgV)
+- **`evaluate_and_sign` (Approve, MPC sign, `AEGIS_SIGNED`):** [28JhPASPePTb2vSX9Wz869eCzJx5L8ZYPtNXnQvV1uYD](https://explorer.testnet.near.org/transactions/28JhPASPePTb2vSX9Wz869eCzJx5L8ZYPtNXnQvV1uYD)
+- **Sepolia broadcast (`success`, block 12134179, 0.001 ETH):** [0x30246cb61117f0f6a2d9d1f7413cad6bbbba002338bd193dda01bc09189c9a94](https://sepolia.etherscan.io/tx/0x30246cb61117f0f6a2d9d1f7413cad6bbbba002338bd193dda01bc09189c9a94)

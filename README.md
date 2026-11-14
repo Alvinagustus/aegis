@@ -95,6 +95,17 @@ AEGIS_CONTRACT=aegis.testnet CALLER_ACCOUNT=aegis-operator.testnet \
 - **Guardians:** M-of-N; hostile minority can delay, not permanently brick (owner unfreeze after cooldown). Misconfiguration (e.g. threshold issues via unsafe bootstrap) is mitigated by `new_configured`.
 - **Usage semantics:** first-seen → hold (quiet period); unknown chain labels share restricted buckets; payroll bypasses per-payment AI by design; `simulate_tx` is a dry-run view (may diverge from `evaluate_tx` side effects/preapprovals). See contract comments for full edge-case notes.
 
+
+## Verified on-chain (end-to-end)
+
+Contract-bound signing verified on `aegis.testnet` (policy + RLP intent binding + MPC XCC → signature → Sepolia broadcast):
+
+- **Contract-derived ETH address (path `ethereum-1`):** `0xf834cac35845704a6648ab033cc99641e4bc4b1e`
+- **AI verdict (`submit_verdict`, `aegis-reviewer.testnet`):** [`BVuajgvNGkqqLmeNou785V85K7cQ3vL3qeyJxKv7hTgV`](https://explorer.testnet.near.org/transactions/BVuajgvNGkqqLmeNou785V85K7cQ3vL3qeyJxKv7hTgV)
+- **`evaluate_and_sign` (Approve → MPC sign → `AEGIS_SIGNED`, `aegis-operator.testnet`):** [`28JhPASPePTb2vSX9Wz869eCzJx5L8ZYPtNXnQvV1uYD`](https://explorer.testnet.near.org/transactions/28JhPASPePTb2vSX9Wz869eCzJx5L8ZYPtNXnQvV1uYD)
+- **Sepolia broadcast (`success`, block `12134179`, 0.001 ETH → `0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D`):** [`0x30246cb61117f0f6a2d9d1f7413cad6bbbba002338bd193dda01bc09189c9a94`](https://sepolia.etherscan.io/tx/0x30246cb61117f0f6a2d9d1f7413cad6bbbba002338bd193dda01bc09189c9a94)
+
+
 ## Build
 
 ```sh
