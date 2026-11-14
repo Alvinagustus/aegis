@@ -16,3 +16,6 @@ CHANGELOG.md
 demo.html
 docs/claude-demo-prompt.md
 docs/demo-script.md
+
+# local/editor
+.DS_Store

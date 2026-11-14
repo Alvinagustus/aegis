@@ -1,8 +1,8 @@
 [package]
-name = "watchdog"
+name = "aegis"
 version = "0.1.0"
 edition = "2021"
-description = "Watchdog Wallet — a policy engine guarding cross-chain spending through NEAR"
+description = "Aegis — a policy engine guarding cross-chain spending through NEAR"
 license = "MIT"
 
 [lib]

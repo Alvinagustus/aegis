@@ -1,9 +1,11 @@
-//! Watchdog Wallet — a policy engine that guards cross-chain spending.
+//! Aegis — a policy engine that guards cross-chain spending.
 //!
 //! An owner's NEAR account controls the wallet's addresses on external chains
 //! (Bitcoin / Ethereum) through NEAR Chain Signatures. Every outbound transfer
-//! must be replayed to this contract before it is signed: `evaluate_tx` returns
-//! an explicit decision, and only approved transfers are ever signed.
+//! is evaluated against on-chain policy (and an AI risk verdict). In the
+//! contract-bound MPC architecture, `evaluate_and_sign` runs policy gates and,
+//! on approval, invokes the MPC signer via cross-contract call (XCC) so the
+//! contract itself authorizes signing.
 //!
 //! Rules (all readable by anyone):
 //! - `daily_limit`  — max spend per UTC day across all chains.
@@ -15,11 +17,13 @@
 //! Holds can be escalated by guardians (M-of-N) to force a release, but the
 //! owner can cancel any hold until it is executed.
 
+mod rlp;
+
 use near_sdk::json_types::U128;
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::serde_json;
 use near_sdk::store::{IterableMap, LookupMap};
-use near_sdk::{env, log, near, require, AccountId};
+use near_sdk::{env, ext_contract, log, near, require, AccountId, Gas, PromiseError, PromiseOrValue};
 use std::collections::HashMap;
 
 pub const ONE_DAY_NANO: u64 = 86_400_000_000_000;
@@ -29,6 +33,55 @@ pub const PANIC_COOLDOWN_NANO: u64 = 3 * ONE_DAY_NANO;
 pub const MIN_ADMIN_DELAY_NANO: u64 = 300_000_000_000; // 5 minutes
 /// ...and never above this ceiling, so a stolen key cannot lock admin forever.
 pub const MAX_ADMIN_DELAY_NANO: u64 = 30 * ONE_DAY_NANO;
+
+
+// --- MPC signer XCC types -------------------------------------------------
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug)]
+pub struct SignRequest {
+    pub payload: Vec<u8>,
+    pub path: String,
+    pub key_version: u32,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug)]
+pub struct AffinePoint {
+    pub affine_point: String,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug)]
+pub struct Scalar {
+    pub scalar: String,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug)]
+pub struct SignResponse {
+    pub big_r: AffinePoint,
+    pub s: Scalar,
+    pub recovery_id: u8,
+}
+
+#[ext_contract(ext_signer)]
+pub trait ExtSigner {
+    fn sign(&mut self, request: SignRequest);
+}
+
+#[ext_contract(ext_self)]
+pub trait ExtSelf {
+    fn on_sign_callback(
+        &mut self,
+        chain: String,
+        to: String,
+        amount: U128,
+        intent_hash: String,
+        day_key: String,
+        #[callback_result] result: Result<SignResponse, PromiseError>,
+    ) -> Option<SignResponse>;
+}
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,7 +243,7 @@ fn intent_hash_for(chain: &str, to: &str, amount: u128, memo_hash: &str, nonce: 
 }
 
 #[near(contract_state)]
-pub struct Watchdog {
+pub struct Aegis {
     /// Account allowed to submit real outbound transfers (the wallet account).
     operator: AccountId,
     /// Trusted AI reviewer — runs off-chain (NEAR AI / TEE), attests here.
@@ -244,19 +297,21 @@ pub struct Watchdog {
     // --- payroll ------------------------------------------------------
     employees: IterableMap<String, Employee>,
     payroll_runs: u64,
+    /// MPC signer contract used for contract-bound signing (XCC).
+    mpc_contract: AccountId,
 }
 
-impl Default for Watchdog {
+impl Default for Aegis {
     fn default() -> Self {
         env::panic_str("contract must be initialized with new()")
     }
 }
 
 #[near]
-impl Watchdog {
+impl Aegis {
     #[init]
     pub fn new(operator: AccountId, guard_threshold: u32) -> Self {
-        Self::init_base(operator, guard_threshold)
+        Self::init_base(operator, guard_threshold, "v1.signer-prod.testnet".parse().unwrap())
     }
 
     /// One-shot bootstrap for production deployments: the initial reviewer,
@@ -271,6 +326,7 @@ impl Watchdog {
         reviewer: Option<AccountId>,
         guardians: Vec<AccountId>,
         whitelist: Vec<(String, String)>,
+        mpc_contract: Option<AccountId>,
     ) -> Self {
         require!(admin_delay >= MIN_ADMIN_DELAY_NANO, "admin delay below minimum");
         require!(admin_delay <= MAX_ADMIN_DELAY_NANO, "admin delay above maximum");
@@ -278,7 +334,8 @@ impl Watchdog {
             guardians.len() as u32 >= guard_threshold,
             "threshold exceeds guardian count"
         );
-        let mut s = Self::init_base(operator, guard_threshold);
+        let mpc = mpc_contract.unwrap_or_else(|| "v1.signer-prod.testnet".parse().unwrap());
+        let mut s = Self::init_base(operator, guard_threshold, mpc);
         s.admin_delay = admin_delay;
         s.reviewer = reviewer;
         for guardian in guardians {
@@ -302,7 +359,7 @@ impl Watchdog {
         s
     }
 
-    fn init_base(operator: AccountId, guard_threshold: u32) -> Self {
+    fn init_base(operator: AccountId, guard_threshold: u32, mpc_contract: AccountId) -> Self {
         require!(guard_threshold >= 1, "threshold must be >= 1");
         Self {
             operator,
@@ -346,6 +403,7 @@ impl Watchdog {
             inheritance_open: false,
             employees: IterableMap::new(b"e"),
             payroll_runs: 0,
+            mpc_contract,
         }
     }
 
@@ -369,68 +427,79 @@ impl Watchdog {
         memo_hash: String,
         nonce: u64,
     ) -> Decision {
+        self.evaluate_core(chain, to, amount, memo_hash, nonce).0
+    }
+
+    /// Internal evaluation: runs the same policy gates as `evaluate_tx`.
+    /// Returns (decision, day_key, intent_hash). On Approve this commits the
+    /// approval side effects (spend recorded, verdict consumed, nonce incremented).
+    fn evaluate_core(
+        &mut self,
+        chain: String,
+        to: String,
+        amount: U128,
+        memo_hash: String,
+        nonce: u64,
+    ) -> (Decision, String, String) {
         require!(env::predecessor_account_id() == self.operator, "only operator");
         require!(nonce == self.next_nonce, "stale nonce");
         let to_norm = to.to_lowercase();
 
+        let now = env::block_timestamp();
+        let day = now / ONE_DAY_NANO;
+        let day_key = format!("{}|{}", day, chain_bucket(&chain));
+        let verdict_key = intent_hash_for(&chain, &to_norm, amount.0, &memo_hash, nonce);
+
         if self.panic {
             Self::event("DENY_ALWAYS", &chain, &to_norm, amount.0);
-            return Decision::Deny;
+            return (Decision::Deny, day_key, verdict_key);
         }
 
         let address_key = format!("{}:{}", chain.to_lowercase(), to_norm);
-        let now = env::block_timestamp();
 
         // --- rule: daily limit -------------------------------------------
-        let day = now / ONE_DAY_NANO;
-        let day_key = format!("{}|{}", day, chain_bucket(&chain));
         let used = *self.spent.get(&day_key).unwrap_or(&0);
         if used.saturating_add(amount.0) > self.policy.limit_for(&chain) {
             Self::event("DENY_DAILY_LIMIT", &chain, &to_norm, amount.0);
-            return Decision::Deny;
+            return (Decision::Deny, day_key, verdict_key);
         }
 
         // --- rule: AI review gate (bound, single-use, expiring) -----------
-        let verdict_key = intent_hash_for(&chain, &to_norm, amount.0, &memo_hash, nonce);
         if let Some(verdict) = self.verdicts.get(&verdict_key).cloned() {
             let expired = now.saturating_sub(verdict.reviewed_at) > self.policy.verdict_ttl;
             if expired {
                 self.verdicts.remove(&verdict_key);
                 Self::event_ai(&chain, &to_norm, verdict.risk, "DENY_VERDICT_EXPIRED");
-                return Decision::Deny;
+                return (Decision::Deny, day_key, verdict_key);
             }
             if verdict.denied || verdict.risk >= self.ai_deny_threshold {
                 Self::event_ai(&chain, &to_norm, verdict.risk, "DENY_AI");
-                return Decision::Deny;
+                return (Decision::Deny, day_key, verdict_key);
             }
         } else if self.reviewer.is_some() {
             Self::event_ai(&chain, &to_norm, 0, "DENY_NO_VERDICT");
-            return Decision::Deny;
+            return (Decision::Deny, day_key, verdict_key);
         }
 
         // --- rule: pre-approved entry (released hold / capsule) ---------
-        // Vetted by guardians or by time; single use; still limit-checked.
         let pre_key = format!("{}|{}|{}", chain.to_lowercase(), to_norm, amount.0);
         if self.preapproved.remove(&pre_key).is_some() {
-            // consume any verdict bound to this transfer too (N6)
             let vk = intent_hash_for(&chain, &to_norm, amount.0, &memo_hash, nonce);
             self.verdicts.remove(&vk);
             self.seen.insert(address_key.clone(), now);
             self.record_spend(&day_key, amount.0);
             self.next_nonce += 1;
             Self::event("APPROVE_PREAPPROVED", &chain, &to_norm, amount.0);
-            return Decision::Approve;
+            return (Decision::Approve, day_key, vk);
         }
 
         // --- rule: existing open hold for this (chain, to) --------------
-        // Opening a hold must never teach the contract the address is known:
-        // otherwise the second evaluate_tx would approve immediately.
         if self.holds.values().any(|h| h.chain.to_lowercase() == chain.to_lowercase()
             && h.to == to_norm
             && (h.status == HoldStatus::Pending || holds_cleared(&h.status)))
         {
             Self::event("HOLD_EXISTS", &chain, &to_norm, amount.0);
-            return Decision::Hold;
+            return (Decision::Hold, day_key, verdict_key);
         }
 
         // --- rule: first-seen address -> hold for the quiet period --------
@@ -440,13 +509,12 @@ impl Watchdog {
         if known {
             self.seen.insert(address_key.clone(), now);
             self.record_spend(&day_key, amount.0);
-            self.verdicts.remove(&verdict_key); // single-use: consumed on approve
+            self.verdicts.remove(&verdict_key);
             self.next_nonce += 1;
             Self::event("APPROVE", &chain, &to_norm, amount.0);
-            return Decision::Approve;
+            return (Decision::Approve, day_key, verdict_key);
         }
 
-        // First interaction with this address: open a hold instead.
         let id = self.next_hold_id;
         self.next_hold_id += 1;
         self.holds.insert(
@@ -463,13 +531,99 @@ impl Watchdog {
             },
         );
         Self::event_hold("HOLD_OPENED", id, 0);
-        Decision::Hold
+        (Decision::Hold, day_key, verdict_key)
     }
 
     /// Called once an approved transfer has actually been broadcast.
     pub fn confirm_broadcast(&mut self) {
         require!(env::predecessor_account_id() == self.operator, "only operator");
         Self::event("BROADCAST_CONFIRMED", "", "", 0);
+    }
+
+    /// Contract-bound MPC signing: evaluate policy and, on Approve, invoke the
+    /// MPC signer via XCC. The caller supplies the unsigned EIP-1559 RLP tx so
+    /// the contract can bind the signed payload to the evaluated intent.
+    #[payable]
+    pub fn evaluate_and_sign(
+        &mut self,
+        chain: String,
+        to: String,
+        amount: U128,
+        memo_hash: String,
+        nonce: u64,
+        raw_tx_rlp: Vec<u8>,
+        path: String,
+    ) -> PromiseOrValue<String> {
+        // 1) Bind signing payload to intent (prevent blind-signing).
+        let parsed = rlp::parse_eip1559(&raw_tx_rlp).unwrap_or_else(|| env::panic_str("invalid EIP-1559 RLP"));
+        let decoded_to = parsed.to.unwrap_or_else(|| env::panic_str("missing destination"));
+        let decoded_hex = rlp::to_hex_lower(&decoded_to);
+        require!(decoded_hex == to.to_lowercase(), "RLP to mismatch");
+        require!(parsed.value == amount.0, "RLP amount mismatch");
+
+        // 2) Policy enforcement (same gates as evaluate_tx).
+        let (decision, day_key, intent_hash) = self.evaluate_core(chain.clone(), to.clone(), amount, memo_hash, nonce);
+        match decision {
+            Decision::Hold => return PromiseOrValue::Value("Hold".to_string()),
+            Decision::Deny => return PromiseOrValue::Value("Deny".to_string()),
+            Decision::Approve => {}
+        }
+
+        // 3) Atomic XCC to MPC on approval.
+        let payload = env::keccak256(&raw_tx_rlp);
+        let request = SignRequest {
+            payload: payload.to_vec(),
+            path,
+            key_version: 0,
+        };
+        let promise = ext_signer::ext(self.mpc_contract.clone())
+            .with_attached_deposit(env::attached_deposit())
+            .with_static_gas(Gas::from_tgas(150))
+            .sign(request)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(30))
+                    .on_sign_callback(chain, to.to_lowercase(), amount, intent_hash, day_key),
+            );
+        PromiseOrValue::Promise(promise)
+    }
+
+    /// Handles MPC signing result. On failure, refunds the spend recorded on Approve.
+    #[private]
+    pub fn on_sign_callback(
+        &mut self,
+        chain: String,
+        to: String,
+        amount: U128,
+        intent_hash: String,
+        day_key: String,
+        #[callback_result] result: Result<SignResponse, PromiseError>,
+    ) -> Option<SignResponse> {
+        match result {
+            Ok(sig) => {
+                log!("AEGIS_SIGNED|{}|{}|{}|{}", intent_hash, chain.to_lowercase(), to.to_lowercase(), amount.0);
+                Some(sig)
+            }
+            Err(_) => {
+                self.refund_spend(&day_key, amount.0);
+                log!("AEGIS_SIGN_FAILED|{}|{}|{}|{}", intent_hash, chain.to_lowercase(), to.to_lowercase(), amount.0);
+                None
+            }
+        }
+    }
+
+    fn refund_spend(&mut self, day_key: &str, amount: u128) {
+        let used = self.spent.get(day_key).copied().unwrap_or(0);
+        let new_used = used.saturating_sub(amount);
+        if new_used == 0 {
+            self.spent.remove(day_key);
+        } else {
+            self.spent.insert(day_key.to_string(), new_used);
+        }
+    }
+
+    pub fn get_mpc_contract(&self) -> AccountId {
+        self.mpc_contract.clone()
     }
 
     // ------------------------------------------------------------------
@@ -1355,15 +1509,15 @@ impl Watchdog {
     }
 
     fn event(tag: &str, chain: &str, to: &str, amount: u128) {
-        log!("watchdog:{}|{}|{}|{}", tag, chain, to, amount);
+        log!("aegis:{}|{}|{}|{}", tag, chain, to, amount);
     }
 
     fn event_ai(chain: &str, to: &str, risk: u8, tag: &str) {
-        log!("watchdog_ai:{}|{}|{}|risk={}", tag, chain, to, risk);
+        log!("aegis_ai:{}|{}|{}|risk={}", tag, chain, to, risk);
     }
 
     fn event_hold(tag: &str, id: u64, release_at: u64) {
-        log!("watchdog_hold:{}|{}|{}", tag, id, release_at);
+        log!("aegis_hold:{}|{}|{}", tag, id, release_at);
     }
 }
 

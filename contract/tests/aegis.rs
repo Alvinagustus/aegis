@@ -1,7 +1,7 @@
 use near_sdk::json_types::U128;
 use near_sdk::test_utils::{accounts, VMContextBuilder};
 use near_sdk::{testing_env, AccountId, NearToken};
-use watchdog::{Decision, HoldStatus, Watchdog};
+use aegis::{Decision, HoldStatus, Aegis};
 
 const OPERATOR: &str = "wallet.testnet";
 const GUARD1: &str = "guard1.testnet";
@@ -17,51 +17,51 @@ fn oper() -> AccountId {
     OPERATOR.parse().unwrap()
 }
 
-fn contract() -> Watchdog {
+fn contract() -> Aegis {
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.predecessor_account_id(oper()).build());
-    let mut c = Watchdog::new(oper(), 2);
+    let mut c = Aegis::new(oper(), 2);
     c.admin_delay = 0; // unit tests operate without the 1-day timelock
     c
 }
 
 // timelock helpers (delay is 0 in tests, so propose→apply is immediate)
-fn set_reviewer_fast(c: &mut Watchdog, reviewer: AccountId) {
+fn set_reviewer_fast(c: &mut Aegis, reviewer: AccountId) {
     c.propose_reviewer(reviewer);
     c.apply_reviewer();
 }
-fn wl(c: &mut Watchdog, chain: &str, address: &str) {
+fn wl(c: &mut Aegis, chain: &str, address: &str) {
     c.propose_whitelist_add(chain.into(), address.into());
     c.apply_whitelist_add(chain.into(), address.into());
 }
-fn guardian(c: &mut Watchdog, account: AccountId) {
+fn guardian(c: &mut Aegis, account: AccountId) {
     c.propose_guardian_add(account.clone());
     c.apply_guardian_add(account);
 }
-fn employee(c: &mut Watchdog, address: &str, salary: U128) {
+fn employee(c: &mut Aegis, address: &str, salary: U128) {
     c.propose_add_employee(address.into(), salary);
     c.apply_add_employee(address.into());
 }
-fn heirs(c: &mut Watchdog, accounts: Vec<AccountId>, addresses: Vec<String>) {
+fn heirs(c: &mut Aegis, accounts: Vec<AccountId>, addresses: Vec<String>) {
     c.propose_set_heirs(accounts, addresses);
     c.apply_set_heirs();
 }
-fn quiet(c: &mut Watchdog, ns: u64) {
+fn quiet(c: &mut Aegis, ns: u64) {
     c.propose_quiet_period_ns(ns);
     c.apply_quiet_period_ns();
 }
-fn thresh(c: &mut Watchdog, n: u32) {
+fn thresh(c: &mut Aegis, n: u32) {
     c.propose_guard_threshold(n);
     c.apply_guard_threshold();
 }
 
 /// evaluate with the current nonce (for non-verdict-seeking tests)
-fn eval(c: &mut Watchdog, chain: &str, to: &str, amount: U128, memo_hash: &str) -> Decision {
+fn eval(c: &mut Aegis, chain: &str, to: &str, amount: U128, memo_hash: &str) -> Decision {
     let nonce = c.get_nonce();
     c.evaluate_tx(chain.into(), to.into(), amount, memo_hash.into(), nonce)
 }
 
-fn eval_sim(c: &mut Watchdog, chain: &str, to: &str, amount: U128, memo_hash: &str) -> Decision {
+fn eval_sim(c: &mut Aegis, chain: &str, to: &str, amount: U128, memo_hash: &str) -> Decision {
     let nonce = c.get_nonce();
     c.simulate_tx(chain.into(), to.into(), amount, memo_hash.into(), nonce)
 }
@@ -217,7 +217,7 @@ fn owner_can_unfreeze_and_owner_only() {
 
 const REVIEWER: &str = "ai-reviewer.testnet";
 
-fn with_reviewer(c: &mut Watchdog, ctx: &mut VMContextBuilder) {
+fn with_reviewer(c: &mut Aegis, ctx: &mut VMContextBuilder) {
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     set_reviewer_fast(c, REVIEWER.parse().unwrap());
 }
@@ -252,7 +252,7 @@ fn ai_deny_overrides_whitelist() {
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
-    c.submit_verdict(key, 99, true, "watchdog-risk-v1".into());
+    c.submit_verdict(key, 99, true, "aegis-risk-v1".into());
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
@@ -272,10 +272,10 @@ fn ai_clears_transfers() {
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
-    c.submit_verdict(key.clone(), 5, false, "watchdog-risk-v1".into());
+    c.submit_verdict(key.clone(), 5, false, "aegis-risk-v1".into());
     let v = c.get_ai_verdict(key.clone()).unwrap();
     assert_eq!(v.risk, 5);
-    assert_eq!(v.model, "watchdog-risk-v1");
+    assert_eq!(v.model, "aegis-risk-v1");
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
@@ -298,7 +298,7 @@ fn high_risk_score_blocks_transfer() {
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
-    c.submit_verdict(key, 70, false, "watchdog-risk-v1".into());
+    c.submit_verdict(key, 70, false, "aegis-risk-v1".into());
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
         eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
@@ -308,7 +308,7 @@ fn high_risk_score_blocks_transfer() {
     // just below the threshold sails through
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
     let key2 = c.compute_intent_hash("eth".into(), "0xcold".into(), U128(5), "memo-b".into(), c.get_nonce());
-    c.submit_verdict(key2, 69, false, "watchdog-risk-v1".into());
+    c.submit_verdict(key2, 69, false, "aegis-risk-v1".into());
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     assert_eq!(
         eval(&mut c, "eth", "0xcold", U128(5), "memo-b"),
@@ -331,7 +331,7 @@ fn only_reviewer_submits_verdicts() {
     expect_panic(|| c.submit_verdict("intent-b".into(), 0, false, "forged".into()));
 
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(REVIEWER.parse().unwrap()).build());
-    c.submit_verdict("intent-b".into(), 0, false, "watchdog-risk-v1".into());
+    c.submit_verdict("intent-b".into(), 0, false, "aegis-risk-v1".into());
     assert!(c.get_ai_verdict("intent-b".into()).is_some());
 }
 
@@ -777,7 +777,7 @@ fn verdict_validates_inputs() {
 fn v1_admin_delay_cannot_collapse_the_timelock() {
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
-    let mut c = Watchdog::new(oper(), 1);
+    let mut c = Aegis::new(oper(), 1);
     assert_eq!(c.get_admin_delay(), DAY);
 
     expect_panic(|| c.set_admin_delay(0));
@@ -915,13 +915,14 @@ fn h6_new_configured_rejects_duplicate_guardians() {
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
     expect_panic(|| {
-        Watchdog::new_configured(
+        Aegis::new_configured(
             oper(),
             2,
             DAY,
             None,
             vec![GUARD1.parse().unwrap(), GUARD1.parse().unwrap()],
             vec![],
+            None,
         );
     });
 }
@@ -931,13 +932,194 @@ fn h6_new_configured_rejects_duplicate_guardians() {
 fn h6_new_configured_accepts_distinct_guardians() {
     let mut ctx = VMContextBuilder::new();
     testing_env!(ctx.block_timestamp(0).predecessor_account_id(oper()).build());
-    let c = Watchdog::new_configured(
+    let c = Aegis::new_configured(
         oper(),
         2,
         DAY,
         None,
         vec![GUARD1.parse().unwrap(), GUARD2.parse().unwrap()],
         vec![],
+        None,
     );
     assert_eq!(c.get_guardians().len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Contract-bound MPC signing (XCC) tests
+// ---------------------------------------------------------------------------
+
+use near_sdk::PromiseOrValue;
+
+fn rlp_encode_bytes(b: &[u8]) -> Vec<u8> {
+    if b.len() == 1 && b[0] <= 0x7f {
+        vec![b[0]]
+    } else if b.len() <= 55 {
+        let mut out = vec![0x80 + b.len() as u8];
+        out.extend_from_slice(b);
+        out
+    } else {
+        let l = b.len();
+        let mut len_bytes = Vec::new();
+        let mut n = l;
+        while n > 0 { len_bytes.insert(0, (n & 0xff) as u8); n >>= 8; }
+        let mut out = vec![0xb7 + len_bytes.len() as u8];
+        out.extend_from_slice(&len_bytes);
+        out.extend_from_slice(b);
+        out
+    }
+}
+
+fn rlp_encode_list(items: &[Vec<u8>]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    for it in items { payload.extend_from_slice(it); }
+    if payload.len() <= 55 {
+        let mut out = vec![0xc0 + payload.len() as u8];
+        out.extend_from_slice(&payload);
+        out
+    } else {
+        let mut len_bytes = Vec::new();
+        let mut n = payload.len();
+        while n > 0 { len_bytes.insert(0, (n & 0xff) as u8); n >>= 8; }
+        let mut out = vec![0xf7 + len_bytes.len() as u8];
+        out.extend_from_slice(&len_bytes);
+        out.extend_from_slice(&payload);
+        out
+    }
+}
+
+fn rlp_u128(v: u128) -> Vec<u8> {
+    if v == 0 { return rlp_encode_bytes(&[]); }
+    let mut bytes = v.to_be_bytes().to_vec();
+    while !bytes.is_empty() && bytes[0] == 0 { bytes.remove(0); }
+    rlp_encode_bytes(&bytes)
+}
+
+fn rlp_addr(hex: &str) -> Vec<u8> {
+    let h = hex.trim_start_matches("0x");
+    let bytes: Vec<u8> = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i+2], 16).unwrap()).collect();
+    rlp_encode_bytes(&bytes)
+}
+
+fn make_eip1559(to: &str, value: u128) -> Vec<u8> {
+    // [chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, yParity, r, s]
+    let items = vec![
+        rlp_u128(11155111), // sepolia
+        rlp_u128(0),
+        rlp_u128(1),
+        rlp_u128(1),
+        rlp_u128(21000),
+        rlp_addr(to),
+        rlp_u128(value),
+        rlp_encode_bytes(&[]),
+        rlp_encode_list(&[]),
+        rlp_u128(0),
+        rlp_encode_bytes(&[]),
+        rlp_encode_bytes(&[]),
+    ];
+    let mut out = vec![0x02];
+    out.extend_from_slice(&rlp_encode_list(&items));
+    out
+}
+
+fn set_current(ctx: &mut VMContextBuilder) {
+    testing_env!(ctx
+        .current_account_id("contract.testnet".parse().unwrap())
+        .predecessor_account_id(oper())
+        .signer_account_id(oper())
+        .attached_deposit(NearToken::from_yoctonear(0))
+        .build());
+}
+
+#[test]
+fn xcc_rlp_to_mismatch_panics_before_policy() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    set_current(&mut ctx);
+    let raw = make_eip1559("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D", 100);
+    // mismatched `to` param vs RLP
+    expect_panic(|| {
+        c.evaluate_and_sign("eth".into(), "0x000000000000000000000000000000000000dead".into(), U128(100), "".into(), 1, raw, "ethereum-1".into());
+    });
+    // nonce unchanged => no policy side effects executed
+    assert_eq!(c.get_nonce(), 1);
+}
+
+#[test]
+fn xcc_rlp_amount_mismatch_panics_before_policy() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    set_current(&mut ctx);
+    let to = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d";
+    let raw = make_eip1559(to, 100);
+    expect_panic(|| {
+        c.evaluate_and_sign("eth".into(), to.into(), U128(999), "".into(), 1, raw, "ethereum-1".into());
+    });
+    assert_eq!(c.get_nonce(), 1);
+}
+
+#[test]
+fn xcc_hold_returns_early_without_promise() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    set_current(&mut ctx);
+    let to = "0x000000000000000000000000000000000000beef";
+    let raw = make_eip1559(to, 100);
+    let res = c.evaluate_and_sign("eth".into(), to.into(), U128(100), "".into(), 1, raw, "ethereum-1".into());
+    match res {
+        PromiseOrValue::Value(v) => assert_eq!(v, "Hold"),
+        _ => panic!("expected Value(Hold)"),
+    }
+}
+
+#[test]
+fn xcc_deny_returns_early_without_promise() {
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    set_current(&mut ctx);
+    // trigger panic mode -> Deny
+    guardian(&mut c, GUARD1.parse().unwrap());
+    testing_env!(ctx.predecessor_account_id(GUARD1.parse().unwrap()).build());
+    c.panic_on();
+    testing_env!(ctx.predecessor_account_id(oper()).current_account_id("contract.testnet".parse().unwrap()).build());
+    let to = "0x000000000000000000000000000000000000beef";
+    let raw = make_eip1559(to, 100);
+    let res = c.evaluate_and_sign("eth".into(), to.into(), U128(100), "".into(), 1, raw, "ethereum-1".into());
+    match res {
+        PromiseOrValue::Value(v) => assert_eq!(v, "Deny"),
+        _ => panic!("expected Value(Deny)"),
+    }
+}
+
+#[test]
+fn callback_refunds_daily_spent_on_failure() {
+    use near_sdk::test_utils::get_logs;
+    let mut c = contract();
+    let mut ctx = VMContextBuilder::new();
+    set_current(&mut ctx);
+    wl(&mut c, "eth".into(), "0xcold".into());
+    // tighten limit so we can observe refund effect
+    c.set_daily_limit("eth".into(), U128(10));
+    assert_eq!(eval(&mut c, "eth", "0xcold", U128(10), "m"), Decision::Approve);
+    // limit fully spent now
+    assert_eq!(eval_sim(&mut c, "eth", "0xcold", U128(1), "m2"), Decision::Deny);
+    let day = near_sdk::env::block_timestamp() / DAY;
+    let day_key = format!("{}|eth", day);
+    testing_env!(ctx
+        .current_account_id("contract.testnet".parse().unwrap())
+        .predecessor_account_id("contract.testnet".parse().unwrap())
+        .build());
+    let res = c.on_sign_callback(
+        "eth".into(),
+        "0xcold".into(),
+        U128(10),
+        "ih".into(),
+        day_key.clone(),
+        Err(near_sdk::PromiseError::Failed),
+    );
+    assert!(res.is_none());
+    let logs = get_logs();
+    assert!(logs.iter().any(|l| l.contains("AEGIS_SIGN_FAILED")));
+    // refunded: spend available again
+    testing_env!(ctx.predecessor_account_id(oper()).current_account_id("contract.testnet".parse().unwrap()).build());
+    assert_eq!(eval_sim(&mut c, "eth", "0xcold", U128(10), "m3"), Decision::Approve);
 }

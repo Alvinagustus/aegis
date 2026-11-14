@@ -1,5 +1,5 @@
 {
-  "name": "watchdog-ai-reviewer",
+  "name": "aegis-ai-reviewer",
   "version": "0.1.0",
   "description": "AI risk reviewer agent for Aegis — classifies transfer intents via NEAR AI Cloud (TEE) and attests verdicts on-chain",
   "type": "module",

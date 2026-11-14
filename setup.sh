@@ -8,10 +8,10 @@
 # Usage:
 #   ./setup.sh <your-near-account> <contract-account> [reviewer] [guardian] [threshold]
 # Examples:
-#   ./setup.sh suisei.testnet aegis.svisei.testnet \
-#     watchdog-reviewer-4d8a7f.testnet watchdog-guardian-4d8a7f.testnet 2
+#   ./setup.sh <your-account.testnet> aegis.testnet \
+#     <reviewer-account> <guardian-account> 2
 #
-# Prerequisites: near-cli-rs on PATH, Rust-built watchdog.wasm, and your
+# Prerequisites: near-cli-rs on PATH, Rust-built aegis.wasm, and your
 # account funded on testnet (faucet: https://near-faucet.io).
 
 set -euo pipefail
@@ -28,9 +28,9 @@ if [[ -z "$OPERATOR" || -z "$CONTRACT" ]]; then
   exit 1
 fi
 
-WASM="contract/target/wasm32-unknown-unknown/release/watchdog.wasm"
+WASM="contract/target/wasm32-unknown-unknown/release/aegis.wasm"
 if [[ ! -f "$WASM" ]]; then
-  echo "watchdog.wasm not found at $WASM"
+  echo "aegis.wasm not found at $WASM"
   echo "build it:  (cd contract && cargo build --target wasm32-unknown-unknown --release)"
   exit 1
 fi

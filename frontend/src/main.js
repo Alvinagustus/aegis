@@ -11,7 +11,7 @@ if (!globalThis.Buffer) globalThis.Buffer = Buffer;
 // ───────────────── constants ─────────────────
 const params = new URLSearchParams(location.search);
 const MODE = params.has("demo") ? "sim" : (params.get("mode") === "live" || params.has("live") ? "live" : null);
-const LIVE_CONTRACT = "aegispolicy.testnet";
+const LIVE_CONTRACT = "aegis.testnet";
 const MPC = "v1.signer-prod.testnet";
 const ETH_PATH = "ethereum-1";
 const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com";

@@ -1,11 +1,11 @@
-// Watchdog AI reviewer — classifies a transfer intent with a model running
+// Aegis AI reviewer — classifies a transfer intent with a model running
 // inside NEAR AI Cloud's TEE, then attests the verdict on-chain
-// (watchdog.submit_verdict). Verdict risk: 0 = safe … 100 = malicious.
+// (submit_verdict). Verdict risk: 0 = safe … 100 = malicious.
 //
 // Env (see ../../.env.example):
 //   NEAR_AI_API_KEY    — NEAR AI Cloud key
 //   REVIEW_MODEL       — model id (default Qwen/Qwen3.8-27B)
-//   WATCHDOG_CONTRACT  — e.g. watchdog-alice.testnet
+//   AEGIS_CONTRACT  — e.g. aegis-contract.testnet
 //   REVIEWER_ACCOUNT   — the reviewer account appointed in the contract
 //   REVIEWER_KEY       — private key (ed25519:...) of REVIEWER_ACCOUNT
 //
@@ -121,8 +121,8 @@ export function intentHash(intent, nonce) {
 }
 
 async function submitOnChain({ intentHash, risk, denied, model }) {
-  for (const k of ["WATCHDOG_CONTRACT", "REVIEWER_ACCOUNT", "REVIEWER_KEY"]) {
-    if (!process.env[k] || k === "WATCHDOG_CONTRACT" && !CONTRACT_ID_RE.test(process.env[k])) throw new Error(`${k} missing/invalid`);
+  for (const k of ["AEGIS_CONTRACT", "REVIEWER_ACCOUNT", "REVIEWER_KEY"]) {
+    if (!process.env[k] || k === "AEGIS_CONTRACT" && !CONTRACT_ID_RE.test(process.env[k])) throw new Error(`${k} missing/invalid`);
   }
   const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
   await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
@@ -133,7 +133,7 @@ async function submitOnChain({ intentHash, risk, denied, model }) {
   });
   const account = await near.account(process.env.REVIEWER_ACCOUNT);
   const result = await account.functionCall({
-    contractId: process.env.WATCHDOG_CONTRACT,
+    contractId: process.env.AEGIS_CONTRACT,
     methodName: "submit_verdict",
     args: { intent_hash: intentHash, risk, denied, model },
     gas: 50_000_000_000_000n,
@@ -152,12 +152,12 @@ async function main() {
 
   // The verdict key depends on the contract nonce (F3): fetch it from chain.
   let nonce = 0;
-  if (process.env.WATCHDOG_CONTRACT && process.env.REVIEWER_ACCOUNT && process.env.REVIEWER_KEY) {
+  if (process.env.AEGIS_CONTRACT && process.env.REVIEWER_ACCOUNT && process.env.REVIEWER_KEY) {
     try {
       const keyStore = new nearAPI.keyStores.InMemoryKeyStore();
       await keyStore.setKey("testnet", process.env.REVIEWER_ACCOUNT, nearAPI.KeyPair.fromString(process.env.REVIEWER_KEY));
       const near = await nearAPI.connect({ networkId: "testnet", keyStore, nodeUrl: "https://testnet-rpc.intea.rs" });
-      nonce = Number(await near.account(process.env.REVIEWER_ACCOUNT).viewFunction({ contractId: process.env.WATCHDOG_CONTRACT, methodName: "get_nonce", args: {} }));
+      nonce = Number(await near.account(process.env.REVIEWER_ACCOUNT).viewFunction({ contractId: process.env.AEGIS_CONTRACT, methodName: "get_nonce", args: {} }));
     } catch (e) {
       console.error("could not read get_nonce (using 0):", e.message);
     }

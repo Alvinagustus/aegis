@@ -1,7 +1,7 @@
 {
-  "name": "watchdog-chainsig",
+  "name": "aegis-chainsig",
   "version": "0.1.0",
-  "description": "Chain Signatures demo — NEAR account signs an Ethereum (Sepolia) transfer via the NEAR MPC network, gated by the Watchdog policy contract",
+  "description": "Chain Signatures demo — NEAR account signs an Ethereum (Sepolia) transfer via the NEAR MPC network, gated by the Aegis policy contract",
   "type": "module",
   "license": "MIT",
   "dependencies": {

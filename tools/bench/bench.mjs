@@ -15,11 +15,11 @@ import os from "node:os";
 import crypto from "node:crypto";
 import * as nearAPI from "near-api-js";
 
-const CONTRACT = "aegispolicy.testnet"; // current audited deployment
-const TEST_CONTRACT = "watchdog-test-4d8a7f.testnet"; // 60s panic cooldown
-const OPERATOR = "watchdog-wallet-4d8a7f.testnet";
-const REVIEWER = "watchdog-reviewer-4d8a7f.testnet";
-const GUARDIAN = "watchdog-guardian-4d8a7f.testnet";
+const CONTRACT = "aegis.testnet"; // current audited deployment
+const TEST_CONTRACT = "aegis-test.testnet"; // 60s panic cooldown
+const OPERATOR = "aegis-operator.testnet";
+const REVIEWER = "aegis-reviewer.testnet";
+const GUARDIAN = "aegis-guardian.testnet";
 const WHITELISTED = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
 
 // expected: the decision the system MUST produce.
@@ -39,7 +39,7 @@ const SCENARIOS = [
   { id: "A11", name: "Compromised key, within-limit, unknown address (C pattern)", kind: "attack", to: "0x00000000000000000000000000000000000BEEF", amount: "1000000000000000", memo: "contract maintenance", expected: "not_approve" },
   // ---- 4 benign controls ----------------------------------------------
   { id: "C01", name: "Normal payment 2192 whitelisted, small", kind: "control", to: WHITELISTED, amount: "5000000000000000", memo: "monthly payment to freelancer", expected: "Approve" },
-  { id: "C02", name: "Normal payment 2192 whitelisted, tiny", kind: "control", to: WHITELISTED, amount: "100000000000000", memo: "watchdog chainsig demo", expected: "Approve" },
+  { id: "C02", name: "Normal payment 2192 whitelisted, tiny", kind: "control", to: WHITELISTED, amount: "100000000000000", memo: "aegis chainsig demo", expected: "Approve" },
   { id: "C03", name: "First payment → brand-new address", kind: "control", to: "0xAbC0000000000000000000000000000000000001", amount: "1000000000000000", memo: "first payment to contractor", expected: "Hold" },
   { id: "C04", name: "Repeat payment 2192 known address", kind: "control", to: WHITELISTED, amount: "200000000000000", memo: "settlement invoice 42", expected: "Approve" },
 ];
