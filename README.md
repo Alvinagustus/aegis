@@ -119,3 +119,5 @@ Built during **NEAR HACKATHON** (2026-11-01 → 2026-11-14), tracks `open` + `se
 Solo builder: Suisei ([@Alvinagustus](https://github.com/Alvinagustus)).
 Stack: `near-sdk 5`, `near-cli-rs`, `near-api-js`, `chainsig.js` + NEAR MPC, `viem`, NEAR AI Cloud, Vite.
 Testnet accounts/keys live locally (`.env`, keychain) — gitignored.
+
+**Other submission (same builder, independent project):** [Overclock](https://github.com/Alvinagustus/Overclock).
